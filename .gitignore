@@ -1,0 +1,46 @@
+# ==================== Keil MDK 编译产物 ====================
+Control/Objects/
+Control/Listings/
+*.o
+*.d
+*.crf
+*.dep
+*.lnp
+*.sct
+*.iex
+*.map
+*.lst
+*.axf
+*.hex
+*.bin
+*.Bak
+project.htm
+project.build_log.htm
+
+# ==================== Keil 个人界面布局 ====================
+*.uvguix.*
+
+# ==================== 日志 ====================
+Control/.vscode/*.log
+Control/.vscode/*.log.lock
+JLinkLog.txt
+JLinkSettings.ini
+
+# ==================== Python ====================
+__pycache__/
+*.pyc
+*.pyo
+
+# ==================== Office 临时文件 ====================
+~$*
+*.tmp
+
+# ==================== 操作系统 ====================
+Thumbs.db
+desktop.ini
+.DS_Store
+*~
+
+# ==================== 本地保留、不入库 ====================
+Doc/*竞赛*.pdf
+VisualTest/

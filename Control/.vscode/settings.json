@@ -1,0 +1,77 @@
+// {
+//     "editor.fontSize": 20,
+//     "editor.fontFamily": "Consolas, 'Courier New', monospace",
+
+//     "editor.suggestFontSize": 20,
+//     "editor.suggestLineHeight": 30,
+//     "editor.suggest.showInlineDetails": false,
+//     "editor.suggest.insertMode": "replace",
+//     "editor.suggest.preview": false,
+//     "editor.suggestSelection": "first",
+//     "editor.wordBasedSuggestions": "off",
+
+//     "editor.quickSuggestions": { "other": "on", "comments": "off", "strings": "off" },
+//     "editor.suggestOnTriggerCharacters": true,
+//     "editor.parameterHints.enabled": true,
+
+//     "editor.hover.delay": 300,
+//     "editor.hover.sticky": true,
+
+//     "editor.minimap.enabled": false,
+//     "files.autoGuessEncoding": true,
+//     "[c]":   { "files.encoding": "gbk", "editor.tabSize": 4, "editor.insertSpaces": false },
+//     "[cpp]": { "files.encoding": "gbk", "editor.tabSize": 4, "editor.insertSpaces": false },
+
+//     "KeilAssistant.MDK.Uv4Path": "E:\\Keil_v5\\UV4\\UV4.exe",
+//     "C_Cpp.default.cStandard": "c99",
+//     "C_Cpp.default.defines": ["USE_STDPERIPH_DRIVER", "STM32F10X_MD"],
+//     "C_Cpp.default.includePath": [
+//         "${workspaceFolder}/**"
+//     ],
+//     "files.autoSave": "afterDelay",
+//     "files.autoSaveDelay": 0,
+
+//     "launch": {
+//         "configurations": [],
+//         "compounds": []
+//     }
+// }
+
+{
+    "editor.fontSize": 24,
+    "editor.fontFamily": "Consolas, 'Courier New', monospace",
+
+    "editor.suggestFontSize": 24,
+    "editor.suggestLineHeight": 30,
+    "editor.suggest.showInlineDetails": false,
+    "editor.suggest.insertMode": "replace",
+    "editor.suggest.preview": false,
+    "editor.suggestSelection": "first",
+    "editor.wordBasedSuggestions": "off",
+
+    "editor.quickSuggestions": { "other": "on", "comments": "off", "strings": "off" },
+    "editor.suggestOnTriggerCharacters": true,
+    "editor.parameterHints.enabled": true,
+
+    "editor.hover.delay": 300,
+    "editor.hover.sticky": true,
+
+    "editor.minimap.enabled": false,
+    "files.autoGuessEncoding": true,
+    "[c]":   { "files.encoding": "gb2312", "editor.tabSize": 4, "editor.insertSpaces": false },
+    "[cpp]": { "files.encoding": "gb2312", "editor.tabSize": 4, "editor.insertSpaces": false },
+
+    "KeilAssistant.MDK.Uv4Path": "E:\\Keil_v5\\UV4\\UV4.exe",
+    "C_Cpp.default.cStandard": "c99",
+    "C_Cpp.default.defines": ["USE_STDPERIPH_DRIVER", "STM32F10X_MD"],
+    "C_Cpp.default.includePath": [
+        "${workspaceFolder}/**"
+    ],
+    "files.autoSave": "afterDelay",
+    "files.autoSaveDelay": 0,
+
+    "launch": {
+        "configurations": [],
+        "compounds": []
+    }
+}

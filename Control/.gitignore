@@ -1,0 +1,35 @@
+# ---- Keil MDK 编译产物 ----
+Objects/
+Listings/
+*.o
+*.d
+*.crf
+*.dep
+*.lnp
+*.sct
+*.iex
+*.map
+*.lst
+*.axf
+*.hex
+*.bin
+*.Bak
+project.htm
+project.build_log.htm
+
+# ---- Keil 个人界面布局（含窗口位置，随人变动）----
+*.uvguix.*
+
+# ---- Keil Assistant / VS Code 日志 ----
+.vscode/*.log
+.vscode/*.log.lock
+
+# ---- J-Link 调试日志 ----
+JLinkLog.txt
+JLinkSettings.ini
+
+# ---- 操作系统 / 编辑器临时文件 ----
+Thumbs.db
+desktop.ini
+.DS_Store
+*~
