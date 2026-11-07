@@ -9,7 +9,6 @@
 #if DEBUG_ENABLE
 
 
-//5个浮点数(1数据帧头+1偏移量+1状态量+1数据帧尾+1vofa_JustFloat帧尾)
 #define DEBUG_FLOAT_NUM 5
 #define DEBUG_TX_SIZE   (DEBUG_FLOAT_NUM * 4 + 4)  // 结果是 24 字节
 

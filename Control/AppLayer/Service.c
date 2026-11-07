@@ -58,12 +58,11 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
     task_last_5ms = curr_ms; // 够时间了，重置闹钟
 
 	Encoder_Update();
-	if(CarRun_State == 0) return;
 
-
-	global_actual_left = (float)Encoder_GetDeltaLeft();
+	global_actual_left  = (float)Encoder_GetDeltaLeft();
 	global_actual_right = (float)Encoder_GetDeltaRight();
 
+	if(CarRun_State == 0) return;
 
 	float pwm_left = PID_V_Calc(&pid_v_left,global_actual_left,target_left);
 	float pwm_right = PID_V_Calc(&pid_v_right,global_actual_right,target_right);
