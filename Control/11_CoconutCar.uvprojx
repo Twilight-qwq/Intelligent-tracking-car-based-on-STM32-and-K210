@@ -769,6 +769,16 @@
               <FileType>5</FileType>
               <FilePath>.\HardwareLayer\Voice.h</FilePath>
             </File>
+            <File>
+              <FileName>WatchDog.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\HardwareLayer\WatchDog.c</FilePath>
+            </File>
+            <File>
+              <FileName>WatchDog.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\HardwareLayer\WatchDog.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

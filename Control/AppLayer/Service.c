@@ -7,12 +7,19 @@
 #define SPEED_SMALLANGLE			25.0f//小角度(直角,钝角)基速
 #define SPEED_LARGEANGLE			15.0f//大角度(锐角)基速
 
+static uint32_t task_last_5ms = 0;
+static uint32_t task_last_10ms = 0;
+static uint32_t task_last_30ms = 0;
+static uint32_t task_last_100ms = 0;
+
 static pid_velocity_t pid_v_left;
 static pid_velocity_t pid_v_right;
 static pid_line_t pid_l;
+
+static uint8_t CarRun_State = 0;
 static float target_left = 0.0f;
 static float target_right = 0.0f;
-static uint8_t CarRun_State = 0;
+
 
 void Service_Init(void)
 {
@@ -28,14 +35,26 @@ void Service_Init(void)
 	PID_VelocityLoop_Init(&pid_v_left,0,0,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//后面再调参
 	PID_VelocityLoop_Init(&pid_v_right,0,0,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//后面再调参
 	PID_LineLoop_Init(&pid_l,0,0,SPEED_STRAIGHTAWAY,-(float)SPEED_STRAIGHTAWAY);//后面再调参
+	WatchDog_Init();
+}
+
+uint32_t Service_Clock(void)
+{
+	return SysTimer_GetTick();
 }
 
 
-
-
-
-void ServiceTask_5ms(void)//内环速度环控制
+void ServiceTask_Idle(void)
 {
+	WatchDog_FeedDog();
+}
+
+
+void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
+{
+	if(curr_ms - task_last_5ms < 5) return;
+    task_last_5ms = curr_ms; // 够时间了，重置闹钟
+
 	Encoder_Update();
 	if(CarRun_State == 0) return;
 
@@ -52,12 +71,11 @@ void ServiceTask_5ms(void)//内环速度环控制
 
 
 
-
-
-
-
-void ServiceTask_30ms(void)//外环方向环控制
+void ServiceTask_30ms(uint32_t curr_ms)//外环方向环控制
 {
+	if(curr_ms - task_last_30ms < 30) return;
+    task_last_30ms = curr_ms;
+
 	if(CarRun_State == 0) return;//关机结束
 
 	static uint8_t lostdata_time = 0; 
@@ -109,26 +127,20 @@ void ServiceTask_30ms(void)//外环方向环控制
 
 
 
-
-
-
-
-
-
-void ServiceTask_10ms(void)
+void ServiceTask_10ms(uint32_t curr_ms)
 {
-    Key_CheckRequest(SysTimer_GetTick()); 
+	if(curr_ms - task_last_10ms < 10) return;
+    task_last_10ms = curr_ms;
+    Key_CheckRequest(curr_ms); 
 }
 
 
 
-
-
-
-
-
-void ServiceTask_100ms(void)//开关控制
+void ServiceTask_100ms(uint32_t curr_ms)//开关控制
 {
+	if(curr_ms - task_last_100ms < 100) return;
+    task_last_100ms = curr_ms;
+
 	if(Key_GetRequest() == 1)
 	{
 		CarRun_State = !CarRun_State;	

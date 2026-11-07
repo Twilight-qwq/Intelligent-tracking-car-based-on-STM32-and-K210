@@ -11,9 +11,12 @@
 #include "PID.h"
 #include "Protocol.h"
 #include "Debug.h"
-void Service_Init(void);//初始化
-void ServiceTask_5ms(void);//内环速度环控制
-void ServiceTask_10ms(void);//读取开关状态
-void ServiceTask_30ms(void);//外环方向环控制
-void ServiceTask_100ms(void);//开关控制
+#include "WatchDog.h"
+void Service_Init(void);					//初始化
+void ServiceTask_Idle(void);				//喂狗
+void ServiceTask_5ms(uint32_t curr_ms);  	//内环速度环控制
+void ServiceTask_10ms(uint32_t curr_ms); 	//读取开关状态
+void ServiceTask_30ms(uint32_t curr_ms); 	//外环方向环控制
+void ServiceTask_100ms(uint32_t curr_ms);	//开关控制
+uint32_t Service_Clock(void);				//系统时钟
 #endif
