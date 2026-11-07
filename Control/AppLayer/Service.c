@@ -19,6 +19,8 @@ static pid_line_t pid_l;
 static uint8_t CarRun_State = 0;
 static float target_left = 0.0f;
 static float target_right = 0.0f;
+static float global_actual_left = 0.0f;
+static float global_actual_right = 0.0f;
 
 
 void Service_Init(void)
@@ -59,13 +61,12 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 	if(CarRun_State == 0) return;
 
 
-	float actual_left = (float)Encoder_GetDeltaLeft();
-	float actual_right = (float)Encoder_GetDeltaRight();
+	global_actual_left = (float)Encoder_GetDeltaLeft();
+	global_actual_right = (float)Encoder_GetDeltaRight();
 
 
-	float pwm_left = PID_V_Calc(&pid_v_left,actual_left,target_left);
-	float pwm_right = PID_V_Calc(&pid_v_right,actual_right,target_right);
-
+	float pwm_left = PID_V_Calc(&pid_v_left,global_actual_left,target_left);
+	float pwm_right = PID_V_Calc(&pid_v_right,global_actual_right,target_right);
 	Motor_SetDuty((int16_t)pwm_left,(int16_t)pwm_right);
 }
 
@@ -173,8 +174,15 @@ void ServiceTask_100ms(uint32_t curr_ms)//开关控制
 		pid_l.err_last = 0;
 		pid_l.err = 0;
 	}
-	else if(CarRun_State == 1)//调试使用,使用完删掉!
-	{
-		Debug_log(g_target_error, g_car_state, target_left, target_right, CarRun_State);
-	}
+
+	debugdata_t data;
+    
+    // 2. 把最新的数据填进去
+    data.target_left  = target_left;
+    data.actual_left  = global_actual_left;
+    data.target_right = target_right;
+    data.actual_right = global_actual_right;
+    data.error        = (float)g_target_error;
+
+	Debug_log(&data);
 }

@@ -4,12 +4,21 @@
 
 #define DEBUG_ENABLE 	1//调试模式开关
 
+//调试数据包结构体
+typedef struct {
+    float target_left;
+    float actual_left;
+    float target_right;
+    float actual_right;
+    float error;
+}debugdata_t;
+
 #if DEBUG_ENABLE
 void Debug_Init(void);
-void Debug_log(int8_t err, uint8_t state, float t_left, float t_right, uint8_t run_state);
+void Debug_log(debugdata_t *data);
 #else
 #define Debug_Init()
-#define Debug_log(a,b,c,d,e)
+#define Debug_log(data)
 #endif
 
 
