@@ -1,15 +1,15 @@
-#ifndef __PROTOCOL_H
+ï»¿#ifndef __PROTOCOL_H
 #define __PROTOCOL_H
 #include "stm32f10x.h"
 
-#define FRAME_HEADER        0xAA  //Í³Ò»Ö¡Í·
-#define FRAME_TAIL          0x55 // Í³Ò»Ö¡Î²
+#define FRAME_HEADER        0xAA  //ç»Ÿä¸€å¸§å¤´
+#define FRAME_TAIL          0x55 // ç»Ÿä¸€å¸§å°¾
 
 
 
 typedef struct {
-    int8_t  error;           // ÊÓ¾õÎó²î
-    uint8_t car_state;       // Â·¿ö×´Ì¬
+    int8_t  error;           // è§†è§‰è¯¯å·®
+    uint8_t car_state;       // è·¯å†µçŠ¶æ€
 } VisionData_t;
 
 void Protocol_VisionParse(uint8_t data);
@@ -21,23 +21,23 @@ uint8_t Protocol_GetVision(VisionData_t *out_data);
 
 
 
-// ËÙ¶È»· (ÄÚ»· PI)
-#define BT_CMD_SET_V_L_KP       0x01  // ×óÂÖËÙ¶È»· Kp
-#define BT_CMD_SET_V_L_KI       0x02  // ×óÂÖËÙ¶È»· Ki
-#define BT_CMD_SET_V_R_KP       0x03  // ÓÒÂÖËÙ¶È»· Kp
-#define BT_CMD_SET_V_R_KI       0x04  // ÓÒÂÖËÙ¶È»· Ki
-// ·½Ïò»· (Íâ»· PD)
-#define BT_CMD_SET_LINE_KP      0x05  // Ñ­¼£·½Ïò»· Kp
-#define BT_CMD_SET_LINE_KD      0x06  // Ñ­¼£·½Ïò»· Kd
-// »ù´¡ËÙ¶È (Â·¿öµ÷ËÙ)
-#define BT_CMD_SET_SPD_STRA     0x07  // Ö±µÀ»ù´¡ËÙ¶È
-#define BT_CMD_SET_SPD_SMALL    0x08  // Ğ¡½Ç¶ÈÍä (Ö±½Ç/¶Û½Ç)
-#define BT_CMD_SET_SPD_LARGE    0x09  // ´ó½Ç¶ÈÍä (Èñ½Ç)
+// é€Ÿåº¦ç¯ (å†…ç¯ PI)
+#define BT_CMD_SET_V_L_KP       0x01  // å·¦è½®é€Ÿåº¦ç¯ Kp
+#define BT_CMD_SET_V_L_KI       0x02  // å·¦è½®é€Ÿåº¦ç¯ Ki
+#define BT_CMD_SET_V_R_KP       0x03  // å³è½®é€Ÿåº¦ç¯ Kp
+#define BT_CMD_SET_V_R_KI       0x04  // å³è½®é€Ÿåº¦ç¯ Ki
+// æ–¹å‘ç¯ (å¤–ç¯ PD)
+#define BT_CMD_SET_LINE_KP      0x05  // å¾ªè¿¹æ–¹å‘ç¯ Kp
+#define BT_CMD_SET_LINE_KD      0x06  // å¾ªè¿¹æ–¹å‘ç¯ Kd
+// åŸºç¡€é€Ÿåº¦ (è·¯å†µè°ƒé€Ÿ)
+#define BT_CMD_SET_SPD_STRA     0x07  // ç›´é“åŸºç¡€é€Ÿåº¦
+#define BT_CMD_SET_SPD_SMALL    0x08  // å°è§’åº¦å¼¯ (ç›´è§’/é’è§’)
+#define BT_CMD_SET_SPD_LARGE    0x09  // å¤§è§’åº¦å¼¯ (é”è§’)
 
 
 typedef struct {
-    uint8_t cmd_type;   // Ö¸ÁîÀàĞÍ (±ÈÈç 0x01 ´ú±í¸Ä×óKp, 0x02 ´ú±í¸Ä×óKd)
-    float   param_val;  // ²ÎÊıÊıÖµ (±ÈÈç 1.5)
+    uint8_t cmd_type;   // æŒ‡ä»¤ç±»å‹ (æ¯”å¦‚ 0x01 ä»£è¡¨æ”¹å·¦Kp, 0x02 ä»£è¡¨æ”¹å·¦Kd)
+    float   param_val;  // å‚æ•°æ•°å€¼ (æ¯”å¦‚ 1.5)
 } BtCommand_t;
 
 uint8_t Protocol_BtParse(uint8_t rx_byte, BtCommand_t *out_cmd);

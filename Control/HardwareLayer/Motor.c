@@ -1,47 +1,47 @@
-#include "stm32f10x.h"
+ï»¿#include "stm32f10x.h"
 #include "Motor.h"
-/* ==================== Òý½Åºê¶¨Òå ==================== */
-// Ê±ÖÓ
+/* ==================== å¼•è„šå®å®šä¹‰ ==================== */
+// æ—¶é’Ÿ
 #define MOTOR_GPIO_CLK          (RCC_APB2Periph_GPIOA|RCC_APB2Periph_GPIOB)
 #define MOTOR_TIM_CLK           RCC_APB2Periph_TIM1
 #define MOTOR_TIM               TIM1
 
-// PWM²ÎÊý£º72MHz / (PSC+1) / (ARR+1) = 72M/36/100 = 20kHz
+// PWMå‚æ•°ï¼š72MHz / (PSC+1) / (ARR+1) = 72M/36/100 = 20kHz
 #define MOTOR_PWM_PSC           35
 #define MOTOR_PWM_ARR           99
 
-// Õ¼¿Õ±ÈÖ¸ÁîÂúÁ¿³Ì£¨¡ë£©£¬ÓëPIDËÙ¶È»·Êä³öÁ¿¸ÙÒ»ÖÂ
+// å ç©ºæ¯”æŒ‡ä»¤æ»¡é‡ç¨‹ï¼ˆâ€°ï¼‰ï¼Œä¸ŽPIDé€Ÿåº¦çŽ¯è¾“å‡ºé‡çº²ä¸€è‡´
 #define MOTOR_DUTY_FULLSCALE    1000
 
-// ×óÂÖPWM->TB6612PWMA
+// å·¦è½®PWM->TB6612PWMA
 #define MOTOR_LEFT_PWM_PORT     GPIOA
 #define MOTOR_LEFT_PWM_PIN      GPIO_Pin_8    // TIM1_CH1
 
-// ÓÒÂÖPWM->TB6612PWMB
+// å³è½®PWM->TB6612PWMB
 #define MOTOR_RIGHT_PWM_PORT    GPIOA
 #define MOTOR_RIGHT_PWM_PIN     GPIO_Pin_11   // TIM1_CH4
 
-// ×óÂÖ·½Ïò,¶¼À­µÍ¾²Ö¹,¶¼À­¸ßÖÆ¶¯
+// å·¦è½®æ–¹å‘,éƒ½æ‹‰ä½Žé™æ­¢,éƒ½æ‹‰é«˜åˆ¶åŠ¨
 #define MOTOR_LEFT_DIR_PORT     GPIOB
 #define MOTOR_LEFT_AIN1_PIN     GPIO_Pin_12
 #define MOTOR_LEFT_AIN2_PIN     GPIO_Pin_13
 
-// ÓÒÂÖ·½Ïò,¶¼À­µÍ¾²Ö¹,¶¼À­¸ßÖÆ¶¯
+// å³è½®æ–¹å‘,éƒ½æ‹‰ä½Žé™æ­¢,éƒ½æ‹‰é«˜åˆ¶åŠ¨
 #define MOTOR_RIGHT_DIR_PORT    GPIOB
 #define MOTOR_RIGHT_BIN1_PIN    GPIO_Pin_14
 #define MOTOR_RIGHT_BIN2_PIN    GPIO_Pin_15
 
-// STBYÊ¹ÄÜÒý½Å,ÉÏµçÀ­µÍ,ÑÏÖØ¶ªÏßÀ­µÍ
+// STBYä½¿èƒ½å¼•è„š,ä¸Šç”µæ‹‰ä½Ž,ä¸¥é‡ä¸¢çº¿æ‹‰ä½Ž
 #define MOTOR_STBY_PORT         GPIOB
 #define MOTOR_STBY_PIN          GPIO_Pin_5
 
-/* ==================== ³õÊ¼»¯ ==================== */
-/* tb6612½ÓÏßËµÃ÷£º
- *   ×óÂÖ£ºAO1->ºìÏß, AO2->ºÚÏß, AIN1->PB12, AIN2->PB13, PWMA->PA8
- *   ÓÒÂÖ£ºBO1->ºìÏß, BO2->ºÚÏß, BIN1->PB14, BIN2->PB15, PWMB->PA11
- *   µçÔ´£ºVM->µç³Ø12.6V(3SÖ±Í¨), VCC->3.3V, GND->¹²µØ, STBY->PB5
- *        //FIX 2£ºVCC±ØÐë½Ó3.3V£¬½Ó5V»áµ¼ÖÂÊäÈë¸ßµçÆ½ÃÅÏÞ²»Æ¥Åä
- * PWMÆµÂÊ 20kHz
+/* ==================== åˆå§‹åŒ– ==================== */
+/* tb6612æŽ¥çº¿è¯´æ˜Žï¼š
+ *   å·¦è½®ï¼šAO1->çº¢çº¿, AO2->é»‘çº¿, AIN1->PB12, AIN2->PB13, PWMA->PA8
+ *   å³è½®ï¼šBO1->çº¢çº¿, BO2->é»‘çº¿, BIN1->PB14, BIN2->PB15, PWMB->PA11
+ *   ç”µæºï¼šVM->ç”µæ± 12.6V(3Sç›´é€š), VCC->3.3V, GND->å…±åœ°, STBY->PB5
+ *        //FIX 2ï¼šVCCå¿…é¡»æŽ¥3.3Vï¼ŒæŽ¥5Vä¼šå¯¼è‡´è¾“å…¥é«˜ç”µå¹³é—¨é™ä¸åŒ¹é…
+ * PWMé¢‘çŽ‡ 20kHz
  */
 void Motor_Init(void)
 {
@@ -50,19 +50,19 @@ void Motor_Init(void)
 	GPIO_InitStruct.GPIO_Mode=GPIO_Mode_AF_PP;
 	GPIO_InitStruct.GPIO_Pin=MOTOR_LEFT_PWM_PIN|MOTOR_RIGHT_PWM_PIN;
 	GPIO_InitStruct.GPIO_Speed=GPIO_Speed_50MHz;
-	GPIO_Init(MOTOR_LEFT_PWM_PORT,&GPIO_InitStruct);//¿ªÆô×óÓÒÂÖpwm¶ÔÓ¦gpio
+	GPIO_Init(MOTOR_LEFT_PWM_PORT,&GPIO_InitStruct);//å¼€å¯å·¦å³è½®pwmå¯¹åº”gpio
 
 
-	/* ÏÈÔÚODRÐ´ËÀµçÆ½ÔÙÅä³ÉÊä³ö£¬±ÜÃâÇÐ»»Ë²¼ä³öÃ«´Ì */
+	/* å…ˆåœ¨ODRå†™æ­»ç”µå¹³å†é…æˆè¾“å‡ºï¼Œé¿å…åˆ‡æ¢çž¬é—´å‡ºæ¯›åˆº */
 	GPIO_InitStruct.GPIO_Mode=GPIO_Mode_Out_PP;
 	GPIO_InitStruct.GPIO_Pin=MOTOR_LEFT_AIN1_PIN|MOTOR_LEFT_AIN2_PIN|
 	                         MOTOR_RIGHT_BIN1_PIN|MOTOR_RIGHT_BIN2_PIN;
-	GPIO_SetBits(MOTOR_LEFT_DIR_PORT,MOTOR_LEFT_AIN2_PIN|MOTOR_RIGHT_BIN2_PIN);//AIN2=1,BIN2=1£¬Ä¬ÈÏÕý×ª
+	GPIO_SetBits(MOTOR_LEFT_DIR_PORT,MOTOR_LEFT_AIN2_PIN|MOTOR_RIGHT_BIN2_PIN);//AIN2=1,BIN2=1ï¼Œé»˜è®¤æ­£è½¬
 	GPIO_ResetBits(MOTOR_LEFT_DIR_PORT,MOTOR_LEFT_AIN1_PIN|MOTOR_RIGHT_BIN1_PIN);//AIN1=0,BIN1=0
 	GPIO_Init(MOTOR_LEFT_DIR_PORT,&GPIO_InitStruct);
 
 	
-	/* STBYÏÈÀ­µÍ£¬´ý»ú£¬·ÀÖ¹³õÊ¼»¯ÆÚ¼äµç»ú³é¶¯ */
+	/* STBYå…ˆæ‹‰ä½Žï¼Œå¾…æœºï¼Œé˜²æ­¢åˆå§‹åŒ–æœŸé—´ç”µæœºæŠ½åŠ¨ */
 	GPIO_InitStruct.GPIO_Mode=GPIO_Mode_Out_PP;
 	GPIO_InitStruct.GPIO_Pin=MOTOR_STBY_PIN;
 	GPIO_InitStruct.GPIO_Speed=GPIO_Speed_50MHz;
@@ -74,14 +74,14 @@ void Motor_Init(void)
 	TIM_TimeBaseInitTypeDef TIM_TimeBaseInitStruct;
 	TIM_TimeBaseInitStruct.TIM_ClockDivision=TIM_CKD_DIV1;
 	TIM_TimeBaseInitStruct.TIM_CounterMode=TIM_CounterMode_Up;
-	TIM_TimeBaseInitStruct.TIM_Period=MOTOR_PWM_ARR;//FIX 3£ºÓÃºê£¬±ÜÃâºÍ»»Ëã³£ÊýÍÑ½Ú
+	TIM_TimeBaseInitStruct.TIM_Period=MOTOR_PWM_ARR;//FIX 3ï¼šç”¨å®ï¼Œé¿å…å’Œæ¢ç®—å¸¸æ•°è„±èŠ‚
 	TIM_TimeBaseInitStruct.TIM_Prescaler=MOTOR_PWM_PSC;
 	TIM_TimeBaseInitStruct.TIM_RepetitionCounter=0;
 	TIM_TimeBaseInit(MOTOR_TIM,&TIM_TimeBaseInitStruct);
 
 
-	/* TIM1ÊÇ¸ß¼¶¶¨Ê±Æ÷£¬NÍ¨µÀÄ¬ÈÏÓ³ÉäÔÚPB13~PB15£¬±ØÐëÏÔÊ½ÇåÁã
-	   ·ÀÖ¹»¥²¹Êä³öÇÀ×ß·½ÏòÒý½Å */
+	/* TIM1æ˜¯é«˜çº§å®šæ—¶å™¨ï¼ŒNé€šé“é»˜è®¤æ˜ å°„åœ¨PB13~PB15ï¼Œå¿…é¡»æ˜¾å¼æ¸…é›¶
+	   é˜²æ­¢äº’è¡¥è¾“å‡ºæŠ¢èµ°æ–¹å‘å¼•è„š */
 	TIM_OCInitTypeDef TIM_OCInitStruct;
 	TIM_OCInitStruct.TIM_OCMode=TIM_OCMode_PWM1;
 	TIM_OCInitStruct.TIM_OCPolarity=TIM_OCPolarity_High;
@@ -101,49 +101,49 @@ void Motor_Init(void)
 	TIM_CtrlPWMOutputs(MOTOR_TIM,ENABLE);
 
 
-	/* ËùÓÐ¼Ä´æÆ÷ÅäÖÃÍê±Ï£¬×îºóÊ¹ÄÜTB6612 */
+	/* æ‰€æœ‰å¯„å­˜å™¨é…ç½®å®Œæ¯•ï¼Œæœ€åŽä½¿èƒ½TB6612 */
 	GPIO_SetBits(MOTOR_STBY_PORT,MOTOR_STBY_PIN);
 }
 
-/* ==================== ·½Ïò¿ØÖÆ ==================== */
-//¿ØÖÆain1,ain2À´¿ØÖÆÐý×ª·½Ïò
+/* ==================== æ–¹å‘æŽ§åˆ¶ ==================== */
+//æŽ§åˆ¶ain1,ain2æ¥æŽ§åˆ¶æ—‹è½¬æ–¹å‘
 static void MotorLeft_SetDirection(uint8_t isForward)
 {
 	if(isForward == 1)
 	{
-		GPIO_ResetBits(MOTOR_LEFT_DIR_PORT,MOTOR_LEFT_AIN1_PIN);//À­µÍAIN1
-		GPIO_SetBits(MOTOR_LEFT_DIR_PORT,MOTOR_LEFT_AIN2_PIN);//À­¸ßAIN2
+		GPIO_ResetBits(MOTOR_LEFT_DIR_PORT,MOTOR_LEFT_AIN1_PIN);//æ‹‰ä½ŽAIN1
+		GPIO_SetBits(MOTOR_LEFT_DIR_PORT,MOTOR_LEFT_AIN2_PIN);//æ‹‰é«˜AIN2
 	}
 	else if(isForward==0)
 	{
-		GPIO_SetBits(MOTOR_LEFT_DIR_PORT,MOTOR_LEFT_AIN1_PIN);//À­¸ßAIN1
-		GPIO_ResetBits(MOTOR_LEFT_DIR_PORT,MOTOR_LEFT_AIN2_PIN);//À­µÍAIN2
+		GPIO_SetBits(MOTOR_LEFT_DIR_PORT,MOTOR_LEFT_AIN1_PIN);//æ‹‰é«˜AIN1
+		GPIO_ResetBits(MOTOR_LEFT_DIR_PORT,MOTOR_LEFT_AIN2_PIN);//æ‹‰ä½ŽAIN2
 	}
 }
 
-/* ÓÒÂÖ·½Ïò¿ØÖÆ
- * isForward: 1=Õý×ª£¬0=·´×ª
+/* å³è½®æ–¹å‘æŽ§åˆ¶
+ * isForward: 1=æ­£è½¬ï¼Œ0=åè½¬
  * PB14->BIN1, PB15->BIN2
  */
 static void MotorRight_SetDirection(uint8_t isForward)
 {
 	if(isForward == 1)
 	{
-		GPIO_ResetBits(MOTOR_RIGHT_DIR_PORT,MOTOR_RIGHT_BIN1_PIN);//À­µÍBIN1
-		GPIO_SetBits(MOTOR_RIGHT_DIR_PORT,MOTOR_RIGHT_BIN2_PIN);//À­¸ßBIN2
+		GPIO_ResetBits(MOTOR_RIGHT_DIR_PORT,MOTOR_RIGHT_BIN1_PIN);//æ‹‰ä½ŽBIN1
+		GPIO_SetBits(MOTOR_RIGHT_DIR_PORT,MOTOR_RIGHT_BIN2_PIN);//æ‹‰é«˜BIN2
 	}
 	else if(isForward==0)
 	{
-		GPIO_SetBits(MOTOR_RIGHT_DIR_PORT,MOTOR_RIGHT_BIN1_PIN);//À­¸ßBIN1
-		GPIO_ResetBits(MOTOR_RIGHT_DIR_PORT,MOTOR_RIGHT_BIN2_PIN);//À­µÍBIN2
+		GPIO_SetBits(MOTOR_RIGHT_DIR_PORT,MOTOR_RIGHT_BIN1_PIN);//æ‹‰é«˜BIN1
+		GPIO_ResetBits(MOTOR_RIGHT_DIR_PORT,MOTOR_RIGHT_BIN2_PIN);//æ‹‰ä½ŽBIN2
 	}
 }
 
 
-/* ==================== Õ¼¿Õ±ÈÊä³ö ==================== */
-/* ¹¦ÄÜ£ºÕ¼¿Õ±ÈÖ¸Áî£¨¡ë£©»»Ëã³ÉCCR±È½ÏÖµ
- * ²ÎÊý£ºduty¾ø¶ÔÖµ£¬ÊäÈë·¶Î§0-1000£¬°Ñ°´°Ù·ÖÖÆ¼ÆËãµÄÕ¼¿Õ±ÈÈ¡Êý×Öºó*10
- * ·µ»Ø£ºCCR±È½ÏÖµ£¬·¶Î§0-ARR
+/* ==================== å ç©ºæ¯”è¾“å‡º ==================== */
+/* åŠŸèƒ½ï¼šå ç©ºæ¯”æŒ‡ä»¤ï¼ˆâ€°ï¼‰æ¢ç®—æˆCCRæ¯”è¾ƒå€¼
+ * å‚æ•°ï¼šdutyç»å¯¹å€¼ï¼Œè¾“å…¥èŒƒå›´0-1000ï¼ŒæŠŠæŒ‰ç™¾åˆ†åˆ¶è®¡ç®—çš„å ç©ºæ¯”å–æ•°å­—åŽ*10
+ * è¿”å›žï¼šCCRæ¯”è¾ƒå€¼ï¼ŒèŒƒå›´0-ARR
  */
 static uint16_t Motor_DutyToCCR(int16_t duty)
 {
@@ -155,17 +155,17 @@ static uint16_t Motor_DutyToCCR(int16_t duty)
 }
 
 
-/* ¹¦ÄÜ£ºÉèÖÃ×óÓÒÂÖÕ¼¿Õ±ÈÖ¸Áî
- * ²ÎÊý1£º×óÂÖÖ¸Áî£¨¡ë£©£¬·¶Î§-1000~1000£¬Õý=Õý×ª£¬¸º=·´×ª£¬0=Í£
- * ²ÎÊý2£ºÓÒÂÖÖ¸Áî£¨¡ë£©£¬·¶Î§Í¬ÉÏ
- * ²ÎÊýÀ´Ô´£ºencoder»ñÈ¡counterÔöÁ¿×÷ÎªËÙ¶È²ÎÕÕÈ»ºó¶ª¸öpidËÙ¶È»·¼ÆËã
- * ·µ»Ø£ºÎÞ
+/* åŠŸèƒ½ï¼šè®¾ç½®å·¦å³è½®å ç©ºæ¯”æŒ‡ä»¤
+ * å‚æ•°1ï¼šå·¦è½®æŒ‡ä»¤ï¼ˆâ€°ï¼‰ï¼ŒèŒƒå›´-1000~1000ï¼Œæ­£=æ­£è½¬ï¼Œè´Ÿ=åè½¬ï¼Œ0=åœ
+ * å‚æ•°2ï¼šå³è½®æŒ‡ä»¤ï¼ˆâ€°ï¼‰ï¼ŒèŒƒå›´åŒä¸Š
+ * å‚æ•°æ¥æºï¼šencoderèŽ·å–counterå¢žé‡ä½œä¸ºé€Ÿåº¦å‚ç…§ç„¶åŽä¸¢ä¸ªpidé€Ÿåº¦çŽ¯è®¡ç®—
+ * è¿”å›žï¼šæ— 
  */
 
 
 void Motor_SetDuty(int16_t left_duty , int16_t right_duty)
 {
-	//1.×óÂÖ
+	//1.å·¦è½®
 	if(left_duty >= 0)
 	{
 		MotorLeft_SetDirection(1);
@@ -177,7 +177,7 @@ void Motor_SetDuty(int16_t left_duty , int16_t right_duty)
 		TIM_SetCompare1(MOTOR_TIM,Motor_DutyToCCR(-left_duty));
 	}
 
-	//2.ÓÒÂÖ
+	//2.å³è½®
 	if(right_duty >= 0)
 	{
 		MotorRight_SetDirection(1);

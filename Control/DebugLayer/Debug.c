@@ -1,4 +1,4 @@
-#include "stm32f10x.h"
+ï»¿#include "stm32f10x.h"
 #include "Debug.h"
 #include <stdio.h>
 #include <string.h>
@@ -10,19 +10,19 @@
 
 
 #define DEBUG_FLOAT_NUM 5
-#define DEBUG_TX_SIZE   (DEBUG_FLOAT_NUM * 4 + 4)  // ½á¹ûÊÇ 24 ×Ö½Ú
+#define DEBUG_TX_SIZE   (DEBUG_FLOAT_NUM * 4 + 4)  // ç»“æœæ˜¯ 24 å­—èŠ‚
 
 typedef enum {
-    CH_TARGET_LEFT = 0,  //Í¨µÀ0:×óÂÖÄ¿±êËÙ¶È
-    CH_ACTUAL_LEFT,      //Í¨µÀ1:×óÂÖÊµ¼ÊËÙ¶È
-    CH_TARGET_RIGHT,     //Í¨µÀ2:ÓÒÂÖÄ¿±êËÙ¶È
-    CH_ACTUAL_RIGHT,     //Í¨µÀ3:ÓÒÂÖÊµ¼ÊËÙ¶È
-    CH_ERROR             //Í¨µÀ4:ÊÓ¾õÎó²î
+    CH_TARGET_LEFT = 0,  //é€šé“0:å·¦è½®ç›®æ ‡é€Ÿåº¦
+    CH_ACTUAL_LEFT,      //é€šé“1:å·¦è½®å®é™…é€Ÿåº¦
+    CH_TARGET_RIGHT,     //é€šé“2:å³è½®ç›®æ ‡é€Ÿåº¦
+    CH_ACTUAL_RIGHT,     //é€šé“3:å³è½®å®é™…é€Ÿåº¦
+    CH_ERROR             //é€šé“4:è§†è§‰è¯¯å·®
 }DebugChannel_e;
 
 static uint8_t debug_tx_buf[DEBUG_TX_SIZE] = {0};
 static const uint8_t vofa_frame_tail[] = {0x00, 0x00, 0x80, 0x7F};
-//VOFA+ JustFloat¹Ì¶¨Ö¡Î²
+//VOFA+ JustFloatå›ºå®šå¸§å°¾
 
 void Debug_Init(void)
 {
@@ -55,9 +55,9 @@ static void Debug_AnalyseData(debugdata_t *data,float *channels)
 
 void Debug_log(debugdata_t *data)
 {
-	if ((DMA1_Channel7->CCR & DMA_CCR1_EN) != 0)//dmaÍ¨µÀ7±»´ò¿ª,¹¤×÷ÖĞ
+	if ((DMA1_Channel7->CCR & DMA_CCR1_EN) != 0)//dmaé€šé“7è¢«æ‰“å¼€,å·¥ä½œä¸­
 	{
-		return;//·ÀÖ¹ĞÂÊı¾İ¸²¸Ç¾ÉÊı¾İ
+		return;//é˜²æ­¢æ–°æ•°æ®è¦†ç›–æ—§æ•°æ®
 	}
 
 	float channels[DEBUG_FLOAT_NUM];
@@ -67,15 +67,15 @@ void Debug_log(debugdata_t *data)
 	memcpy(debug_tx_buf+sizeof(channels), vofa_frame_tail, sizeof(vofa_frame_tail));
 
 	DMA_Cmd(DMA1_Channel7,DISABLE);
-	//ÔÚĞŞ¸Ä DMA µÄ°áÔËÊıÁ¿¡¢ÄÚ´æµØÖ·µÈ²ÎÊıÊ±£¬DMA Í¨µÀ±ØĞë´¦ÓÚ¹Ø±Õ×´Ì¬
+	//åœ¨ä¿®æ”¹ DMA çš„æ¬è¿æ•°é‡ã€å†…å­˜åœ°å€ç­‰å‚æ•°æ—¶ï¼ŒDMA é€šé“å¿…é¡»å¤„äºå…³é—­çŠ¶æ€
 	
 	DMA_ClearFlag(DMA1_FLAG_TC7);
-	//°ÑÉÏÒ»´Î·¢ËÍÍê³É±êÖ¾Î»Çå³ı(TC7),
+	//æŠŠä¸Šä¸€æ¬¡å‘é€å®Œæˆæ ‡å¿—ä½æ¸…é™¤(TC7),
 
 	DMA_SetCurrDataCounter(DMA1_Channel7,DEBUG_TX_SIZE);
-	//ÉèÖÃÒª·¢ËÍÊı¾İµÄ³¤¶È
+	//è®¾ç½®è¦å‘é€æ•°æ®çš„é•¿åº¦
 	
 	DMA_Cmd(DMA1_Channel7,ENABLE);
-	//¿ªÆô×ªÔËÊı¾İ
+	//å¼€å¯è½¬è¿æ•°æ®
 }
 #endif

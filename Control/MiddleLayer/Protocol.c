@@ -1,4 +1,4 @@
-#include <string.h>
+ï»¿#include <string.h>
 #include "Protocol.h"
 
 
@@ -6,23 +6,23 @@ static int8_t  target_error = 0;
 static uint8_t car_state = 0;
 static volatile uint8_t data_ready = 0;
 
-//ÊÓ¾õ×´Ì¬»ú
+//è§†è§‰çŠ¶æ€æœº
 typedef enum {
-    V_WAIT_HEADER = 0, // µÈ´ıÖ¡Í· 0xAA
-    V_RECV_ERROR,      // ½ÓÊÕÆ«²îÖµ
-    V_RECV_STATE,      // ½ÓÊÕÂ·¿ö×´Ì¬
-    V_WAIT_TAIL        // µÈ´ıÖ¡Î² 0x55
+    V_WAIT_HEADER = 0, // ç­‰å¾…å¸§å¤´ 0xAA
+    V_RECV_ERROR,      // æ¥æ”¶åå·®å€¼
+    V_RECV_STATE,      // æ¥æ”¶è·¯å†µçŠ¶æ€
+    V_WAIT_TAIL        // ç­‰å¾…å¸§å°¾ 0x55
 } VisionState_t;
 
-//À¶ÑÀ×´Ì¬»ú
+//è“ç‰™çŠ¶æ€æœº
 typedef enum {
-    B_WAIT_HEADER = 0, // µÈ´ıÖ¡Í· 0xAA
-    B_RECV_CMD,        // ½ÓÊÕ(recv)Ö¸ÁîÀàĞÍ (0x01¸ÄKp, 0x02¸ÄKd...)
-    B_RECV_DATA,       // ½ÓÊÕ 4 ¸ö×Ö½ÚµÄÊı¾İ
-    B_WAIT_TAIL        // µÈ´ıÖ¡Î² 0x55
+    B_WAIT_HEADER = 0, // ç­‰å¾…å¸§å¤´ 0xAA
+    B_RECV_CMD,        // æ¥æ”¶(recv)æŒ‡ä»¤ç±»å‹ (0x01æ”¹Kp, 0x02æ”¹Kd...)
+    B_RECV_DATA,       // æ¥æ”¶ 4 ä¸ªå­—èŠ‚çš„æ•°æ®
+    B_WAIT_TAIL        // ç­‰å¾…å¸§å°¾ 0x55
 } BtState_t;
 
-//K210Êı¾İ½âÎö
+//K210æ•°æ®è§£æ
 void Protocol_VisionParse(uint8_t data)
 {
     static VisionState_t current_state = V_WAIT_HEADER;
@@ -30,7 +30,7 @@ void Protocol_VisionParse(uint8_t data)
     switch(current_state)
     {
         case V_WAIT_HEADER:
-            if(data == FRAME_HEADER) current_state = V_RECV_ERROR; // ¡¾ĞŞ¸Äµã¡¿
+            if(data == FRAME_HEADER) current_state = V_RECV_ERROR; // ã€ä¿®æ”¹ç‚¹ã€‘
             break;
             
         case V_RECV_ERROR:
@@ -44,7 +44,7 @@ void Protocol_VisionParse(uint8_t data)
             break;
             
         case V_WAIT_TAIL:
-            if(data == FRAME_TAIL) data_ready = 1; // ¡¾ĞŞ¸Äµã¡¿
+            if(data == FRAME_TAIL) data_ready = 1; // ã€ä¿®æ”¹ç‚¹ã€‘
             current_state = V_WAIT_HEADER; 
             break;
             
@@ -61,16 +61,16 @@ uint8_t Protocol_GetVision(VisionData_t *out_data)
     {
         uint32_t primask = __get_PRIMASK(); 
         __disable_irq(); 
-        // ¹Ø×ÜÖĞ¶Ï£¬·ÀÖ¹¶ÁÈ¡Ê±±»Á½¸öÊı¾İK210ĞÂÊı¾İ¸²¸Çµ¥¸ö,µ¼ÖÂÊı¾İ´íÂÒ
+        // å…³æ€»ä¸­æ–­ï¼Œé˜²æ­¢è¯»å–æ—¶è¢«ä¸¤ä¸ªæ•°æ®K210æ–°æ•°æ®è¦†ç›–å•ä¸ª,å¯¼è‡´æ•°æ®é”™ä¹±
 
         out_data->error = target_error;
         out_data->car_state = car_state;
         data_ready = 0;
         
         __set_PRIMASK(primask);
-        return 1; //³É¹¦ÄÃµ½ĞÂÊı¾İ
+        return 1; //æˆåŠŸæ‹¿åˆ°æ–°æ•°æ®
     }
-    return 0; // Ã»ĞÂÊı¾İ
+    return 0; // æ²¡æ–°æ•°æ®
 }
 
 
@@ -79,9 +79,9 @@ uint8_t Protocol_GetVision(VisionData_t *out_data)
 uint8_t Protocol_BtParse(uint8_t rx_byte, BtCommand_t *out_cmd)
 {
     static BtState_t current_state = B_WAIT_HEADER;
-    static uint8_t temp_cmd = 0;     //Ôİ´æÖ¸ÁîÀàĞÍ(Ö¸ÁîÂë)
-    static uint8_t data_buf[4];      //Ôİ´æ4¸ö×Ö½ÚµÄ¸¡µãÊı
-    static uint8_t data_index = 0;   //¼ÇÂ¼µ±Ç°´æµ½µÚ¼¸¸ö×Ö½Ú
+    static uint8_t temp_cmd = 0;     //æš‚å­˜æŒ‡ä»¤ç±»å‹(æŒ‡ä»¤ç )
+    static uint8_t data_buf[4];      //æš‚å­˜4ä¸ªå­—èŠ‚çš„æµ®ç‚¹æ•°
+    static uint8_t data_index = 0;   //è®°å½•å½“å‰å­˜åˆ°ç¬¬å‡ ä¸ªå­—èŠ‚
 
     switch(current_state)
     {
@@ -90,37 +90,37 @@ uint8_t Protocol_BtParse(uint8_t rx_byte, BtCommand_t *out_cmd)
             {
                 current_state = B_RECV_CMD; 
             }
-            //Èç¹ûÊÕµ½±ğµÄÂÒÂë²»Àí»á,¼ÌĞøµÈ0xAA
+            //å¦‚æœæ”¶åˆ°åˆ«çš„ä¹±ç ä¸ç†ä¼š,ç»§ç»­ç­‰0xAA
             break;
 
         case B_RECV_CMD:
-            temp_cmd = rx_byte;             //¼ÇÏÂĞèÒª¸Ä±äµÄ²ÎÊı
-            data_index = 0;                 //×¼±¸¿ªÊ¼ÊÕ4¸ö×Ö½ÚµÄÊı¾İ
+            temp_cmd = rx_byte;             //è®°ä¸‹éœ€è¦æ”¹å˜çš„å‚æ•°
+            data_index = 0;                 //å‡†å¤‡å¼€å§‹æ”¶4ä¸ªå­—èŠ‚çš„æ•°æ®
             current_state = B_RECV_DATA;
             break;
 
-        case B_RECV_DATA://Ò»¸ö¸¡µãÊı4×Ö½Ú
+        case B_RECV_DATA://ä¸€ä¸ªæµ®ç‚¹æ•°4å­—èŠ‚
             data_buf[data_index++] = rx_byte;
             
-            if(data_index >= 4)//4×Ö½ÚÊÕÆë
+            if(data_index >= 4)//4å­—èŠ‚æ”¶é½
             {
-                current_state = B_WAIT_TAIL;//µÈÖ¡Î²
+                current_state = B_WAIT_TAIL;//ç­‰å¸§å°¾
             }
             break;
 
         case B_WAIT_TAIL:
-            if(rx_byte == FRAME_TAIL)//Ö¡Î²ÕıÈ·
+            if(rx_byte == FRAME_TAIL)//å¸§å°¾æ­£ç¡®
             {
                 out_cmd->cmd_type = temp_cmd;
-                //°Ñ 4 ¸öÁãÉ¢µÄ×Ö½ÚÆ´³ÉÒ»¸öÍêÕûµÄ¸¡µãÊı
+                //æŠŠ 4 ä¸ªé›¶æ•£çš„å­—èŠ‚æ‹¼æˆä¸€ä¸ªå®Œæ•´çš„æµ®ç‚¹æ•°
                 memcpy(&(out_cmd->param_val), data_buf, 4);
                 
-                current_state = B_WAIT_HEADER;//ÖØÖÃ×´Ì¬×¼±¸ÏÂÒ»°ü
-                return 1;//½âÎö³É¹¦
+                current_state = B_WAIT_HEADER;//é‡ç½®çŠ¶æ€å‡†å¤‡ä¸‹ä¸€åŒ…
+                return 1;//è§£ææˆåŠŸ
             }
-            else//Ö¡Î²²»¶Ô,ËµÃ÷ÖĞ¼ä¶ª°üÁË»òÕß±»¸ÉÈÅÁË
+            else//å¸§å°¾ä¸å¯¹,è¯´æ˜ä¸­é—´ä¸¢åŒ…äº†æˆ–è€…è¢«å¹²æ‰°äº†
             {
-                current_state = B_WAIT_HEADER;//ÖØÖÃ£¬ÖØĞÂµÈÖ¡Í·
+                current_state = B_WAIT_HEADER;//é‡ç½®ï¼Œé‡æ–°ç­‰å¸§å¤´
             }
             break;
 
@@ -130,5 +130,5 @@ uint8_t Protocol_BtParse(uint8_t rx_byte, BtCommand_t *out_cmd)
             break;
     }
     
-    return 0;//»¹Ã»ÊÕÈ«¾Í·µ»Ø0
+    return 0;//è¿˜æ²¡æ”¶å…¨å°±è¿”å›0
 }

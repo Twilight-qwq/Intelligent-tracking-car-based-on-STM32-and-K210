@@ -1,4 +1,4 @@
-#include "stm32f10x.h"
+ï»¿#include "stm32f10x.h"
 #include "Voice.h"
 
 static volatile uint8_t Voice_Cmd = 0;
@@ -42,7 +42,7 @@ void Voice_Init(void)
 uint8_t Voice_GetCommand(void)
 {
     uint8_t cmd = Voice_Cmd;
-	USART_ITConfig(USART3, USART_IT_RXNE, DISABLE);//·ÀÖ¹¿ìËÙ·¢ĞÂÖ¸ÁîÊ±ÎŞÏìÓ¦
+	USART_ITConfig(USART3, USART_IT_RXNE, DISABLE);//é˜²æ­¢å¿«é€Ÿå‘æ–°æŒ‡ä»¤æ—¶æ— å“åº”
     if (cmd != 0) 
     {
         Voice_Cmd = 0;

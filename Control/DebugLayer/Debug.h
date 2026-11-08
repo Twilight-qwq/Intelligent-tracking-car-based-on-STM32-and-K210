@@ -1,10 +1,10 @@
-#ifndef __DEBUG_H
+ï»¿#ifndef __DEBUG_H
 #define __DEBUG_H
 #include "stm32f10x.h"
 
-#define DEBUG_ENABLE 	1//µ÷ÊÔÄ£Ê½¿ª¹Ø
+#define DEBUG_ENABLE 	1//è°ƒè¯•æ¨¡å¼å¼€å…³
 
-//µ÷ÊÔÊı¾İ°ü½á¹¹Ìå
+//è°ƒè¯•æ•°æ®åŒ…ç»“æ„ä½“
 typedef struct {
     float target_left;
     float actual_left;

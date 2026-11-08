@@ -57,9 +57,10 @@
     "editor.hover.sticky": true,
 
     "editor.minimap.enabled": false,
-    "files.autoGuessEncoding": true,
-    "[c]":   { "files.encoding": "gb2312", "editor.tabSize": 4, "editor.insertSpaces": false },
-    "[cpp]": { "files.encoding": "gb2312", "editor.tabSize": 4, "editor.insertSpaces": false },
+    "files.autoGuessEncoding": false,
+    "files.encoding": "utf8",
+    "[c]":   { "files.encoding": "utf8", "editor.tabSize": 4, "editor.insertSpaces": false },
+    "[cpp]": { "files.encoding": "utf8", "editor.tabSize": 4, "editor.insertSpaces": false },
 
     "KeilAssistant.MDK.Uv4Path": "E:\\Keil_v5\\UV4\\UV4.exe",
     "C_Cpp.default.cStandard": "c99",

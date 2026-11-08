@@ -1,4 +1,4 @@
-#include "Service.h"
+ï»¿#include "Service.h"
 int main(void)
 {
 	Service_Init();
@@ -12,4 +12,4 @@ int main(void)
 		ServiceTask_100ms(timestamp);
 	}
 }
-//µ÷ÊÔ:VOFA+ JustFloatĞ­Òé
+//è°ƒè¯•:VOFA+ JustFloatåè®®

@@ -1,6 +1,6 @@
-#include "stm32f10x.h"
+ï»¿#include "stm32f10x.h"
 #ifndef __SYSTIMER_H
 #define __SYSTIMER_H
-void SysTimer_Init(void);//Ê±¼ä´ÁÄ£¿é³õÊ¼»¯
-uint32_t SysTimer_GetTick(void);//»ñÈ¡µ±Ç°Ê±¼ä´Á(µ±Ç°ms)
+void SysTimer_Init(void);//æ—¶é—´æˆ³æ¨¡å—åˆå§‹åŒ–
+uint32_t SysTimer_GetTick(void);//è·å–å½“å‰æ—¶é—´æˆ³(å½“å‰ms)
 #endif

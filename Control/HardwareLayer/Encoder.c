@@ -1,21 +1,21 @@
-#include "stm32f10x.h"
+ï»¿#include "stm32f10x.h"
 #include "Encoder.h"
 
-/* ==================== Òı½Åºê¶¨Òå ==================== */
-/* ×ó±àÂëÆ÷£ºTIM2 ²¿·ÖÖØÓ³Éä1 -> CH1=PA15, CH2=PB3
- *   ×¢Òâ1£ºPA15/PB3 ¸´Î»ºóÄ¬ÈÏÊÇ JTAG µÄ JTDI/JTDO£¬
- *          ±ØĞëÔÚ main ÀïÏÈ¹Ø JTAG£¬ÔÙµ÷ÓÃ Encoder_Init()
- *   ×¢Òâ2£ºPB3 Ó²¼şÉÏ±ØĞë´® 1k¦¸ µç×è£¬·ñÔò²å×ÅÏÂÔØÆ÷¸´Î»Ê±»áºÍ JTDO ¶Ô¶¥
- * ÓÒ±àÂëÆ÷£ºTIM4 -> CH1=PB6, CH2=PB7£¨ÎŞÖØÓ³Éä£© */
+/* ==================== å¼•è„šå®å®šä¹‰ ==================== */
+/* å·¦ç¼–ç å™¨ï¼šTIM2 éƒ¨åˆ†é‡æ˜ å°„1 -> CH1=PA15, CH2=PB3
+ *   æ³¨æ„1ï¼šPA15/PB3 å¤ä½åé»˜è®¤æ˜¯ JTAG çš„ JTDI/JTDOï¼Œ
+ *          å¿…é¡»åœ¨ main é‡Œå…ˆå…³ JTAGï¼Œå†è°ƒç”¨ Encoder_Init()
+ *   æ³¨æ„2ï¼šPB3 ç¡¬ä»¶ä¸Šå¿…é¡»ä¸² 1kÎ© ç”µé˜»ï¼Œå¦åˆ™æ’ç€ä¸‹è½½å™¨å¤ä½æ—¶ä¼šå’Œ JTDO å¯¹é¡¶
+ * å³ç¼–ç å™¨ï¼šTIM4 -> CH1=PB6, CH2=PB7ï¼ˆæ— é‡æ˜ å°„ï¼‰ */
 #define ENCODER_GPIO_CLK		(RCC_APB2Periph_GPIOA | RCC_APB2Periph_GPIOB | RCC_APB2Periph_AFIO)
-//×óÂÖµç»ú±àÂëÆ÷£ºpa15£¬pb3
+//å·¦è½®ç”µæœºç¼–ç å™¨ï¼špa15ï¼Œpb3
 #define ENCODER_LEFT_A_PORT		GPIOA
 #define ENCODER_LEFT_A_PIN		GPIO_Pin_15
 #define ENCODER_LEFT_B_PORT		GPIOB
 #define ENCODER_LEFT_B_PIN		GPIO_Pin_3
 #define ENCODER_LEFT_TIM		TIM2
 #define ENCODER_LEFT_TIMCLK		RCC_APB1Periph_TIM2
-//ÓÒÂÖµç»ú±àÂëÆ÷£ºpb6£¬pb7
+//å³è½®ç”µæœºç¼–ç å™¨ï¼špb6ï¼Œpb7
 #define ENCODER_RIGHT_A_PORT	GPIOB
 #define ENCODER_RIGHT_A_PIN		GPIO_Pin_6
 #define ENCODER_RIGHT_B_PORT	GPIOB
@@ -23,51 +23,51 @@
 #define ENCODER_RIGHT_TIM		TIM4
 #define ENCODER_RIGHT_TIMCLK	RCC_APB1Periph_TIM4
 
-/* ÔöÁ¿»º´æ£ºÓÉ Encoder_Update() Ë¢ĞÂ£¬±ÜÃâÉÏ²ãÖØ¸´µ÷ÓÃ°ÑÔöÁ¿ÇåÁã */
+/* å¢é‡ç¼“å­˜ï¼šç”± Encoder_Update() åˆ·æ–°ï¼Œé¿å…ä¸Šå±‚é‡å¤è°ƒç”¨æŠŠå¢é‡æ¸…é›¶ */
 static int16_t EncLeft_LastCounter = 0;
 static int16_t EncRight_LastCounter = 0;
 static int16_t EncLeft_DeltaCounter = 0;
 static int16_t EncRight_DeltaCounter = 0;
 
-/* ==================== ³õÊ¼»¯ ==================== */
-/* ¹¦ÄÜ£º³õÊ¼»¯×óÓÒ±àÂëÆ÷£¨TIM2ÖØÓ³Éä / TIM4£©
- * ²ÎÊı£ºÎŞ
- * ·µ»Ø£ºÎŞ
- * ×¢Òâ£º±¾º¯ÊıÄÚ²¿Òª×ö TIM2 Òı½ÅÖØÓ³Éä£¬±ØĞëÔÚ¹Ø±Õ JTAG Ö®ºóµ÷ÓÃ
+/* ==================== åˆå§‹åŒ– ==================== */
+/* åŠŸèƒ½ï¼šåˆå§‹åŒ–å·¦å³ç¼–ç å™¨ï¼ˆTIM2é‡æ˜ å°„ / TIM4ï¼‰
+ * å‚æ•°ï¼šæ— 
+ * è¿”å›ï¼šæ— 
+ * æ³¨æ„ï¼šæœ¬å‡½æ•°å†…éƒ¨è¦åš TIM2 å¼•è„šé‡æ˜ å°„ï¼Œå¿…é¡»åœ¨å…³é—­ JTAG ä¹‹åè°ƒç”¨
  */
 void Encoder_Init(void)
 {
 	RCC_APB2PeriphClockCmd(RCC_APB2Periph_AFIO, ENABLE);
     GPIO_PinRemapConfig(GPIO_Remap_SWJ_JTAGDisable, ENABLE);
 
-	//1.Ê±ÖÓ£ºGPIOA(PA15) + GPIOB(PB3/PB6/PB7) + AFIO(ÖØÓ³Éä)
+	//1.æ—¶é’Ÿï¼šGPIOA(PA15) + GPIOB(PB3/PB6/PB7) + AFIO(é‡æ˜ å°„)
 	RCC_APB2PeriphClockCmd(ENCODER_GPIO_CLK,ENABLE);
 
-	//2.×ó±àÂëÆ÷Òı½ÅÖØÓ³Éä£ºTIM2_CH1->PA15, TIM2_CH2->PB3
-	//  ±ØĞëÓÃ¿âº¯Êı£¬½ûÖ¹ AFIO->MAPR |= ... ÕâÖÖÂã¼Ä´æÆ÷Ğ´·¨£º
-	//  SWJ_CFG ÊÇÖ»Ğ´Î»£¬¶Á»ØÖµÎ´¶¨Òå£¬¶Á-¸Ä-Ğ´»áËæ»úÖÆÔì¡°ÖØĞÂÉÏµç¾Í»µ¡±
+	//2.å·¦ç¼–ç å™¨å¼•è„šé‡æ˜ å°„ï¼šTIM2_CH1->PA15, TIM2_CH2->PB3
+	//  å¿…é¡»ç”¨åº“å‡½æ•°ï¼Œç¦æ­¢ AFIO->MAPR |= ... è¿™ç§è£¸å¯„å­˜å™¨å†™æ³•ï¼š
+	//  SWJ_CFG æ˜¯åªå†™ä½ï¼Œè¯»å›å€¼æœªå®šä¹‰ï¼Œè¯»-æ”¹-å†™ä¼šéšæœºåˆ¶é€ â€œé‡æ–°ä¸Šç”µå°±åâ€
 	GPIO_PinRemapConfig(GPIO_PartialRemap1_TIM2,ENABLE);
 
-	//3.±àÂëÆ÷A/BÏà£ºÉÏÀ­ÊäÈë
+	//3.ç¼–ç å™¨A/Bç›¸ï¼šä¸Šæ‹‰è¾“å…¥
 	GPIO_InitTypeDef GPIO_InitStruct;
 	GPIO_InitStruct.GPIO_Mode = GPIO_Mode_IPU;
 	GPIO_InitStruct.GPIO_Speed = GPIO_Speed_50MHz;
 	GPIO_InitStruct.GPIO_Pin = ENCODER_LEFT_A_PIN;
 
-	//×óÂÖ±àÂëÆ÷³õÊ¼»¯
+	//å·¦è½®ç¼–ç å™¨åˆå§‹åŒ–
 	GPIO_Init(ENCODER_LEFT_A_PORT,&GPIO_InitStruct);
 	GPIO_InitStruct.GPIO_Pin = ENCODER_LEFT_B_PIN;
 	GPIO_Init(ENCODER_LEFT_B_PORT,&GPIO_InitStruct);
 
-	//ÓÒÂÖ±àÂëÆ÷³õÊ¼»¯
+	//å³è½®ç¼–ç å™¨åˆå§‹åŒ–
 	GPIO_InitStruct.GPIO_Pin = ENCODER_RIGHT_A_PIN | ENCODER_RIGHT_B_PIN;
 	GPIO_Init(ENCODER_RIGHT_A_PORT,&GPIO_InitStruct);
 
-	//4.¶¨Ê±Æ÷Ê±ÖÓ
+	//4.å®šæ—¶å™¨æ—¶é’Ÿ
 	RCC_APB1PeriphClockCmd(ENCODER_LEFT_TIMCLK,ENABLE);
 	RCC_APB1PeriphClockCmd(ENCODER_RIGHT_TIMCLK,ENABLE);
 
-	//5.Ê±»ù£º16Î»¼ÆÊıÆ÷£¬²»·ÖÆµ£¬×Ô¶¯ÖØ×°65535
+	//5.æ—¶åŸºï¼š16ä½è®¡æ•°å™¨ï¼Œä¸åˆ†é¢‘ï¼Œè‡ªåŠ¨é‡è£…65535
 	TIM_TimeBaseInitTypeDef TIM_TimeBaseInitStruct;
 	TIM_TimeBaseInitStruct.TIM_ClockDivision = TIM_CKD_DIV1;
 	TIM_TimeBaseInitStruct.TIM_CounterMode = TIM_CounterMode_Up;
@@ -77,24 +77,24 @@ void Encoder_Init(void)
 	TIM_TimeBaseInit(ENCODER_LEFT_TIM,&TIM_TimeBaseInitStruct);
 	TIM_TimeBaseInit(ENCODER_RIGHT_TIM,&TIM_TimeBaseInitStruct);
 
-	//6.ÊäÈë²¶»ñ£ºÖ»¸ÄÂË²¨£¬ÆäÓàÓÃÄ¬ÈÏÖµ
+	//6.è¾“å…¥æ•è·ï¼šåªæ”¹æ»¤æ³¢ï¼Œå…¶ä½™ç”¨é»˜è®¤å€¼
 	TIM_ICInitTypeDef TIM_ICInitStruct;
 	TIM_ICStructInit(&TIM_ICInitStruct);
 	TIM_ICInitStruct.TIM_ICFilter = 0xF;
 
 
-	/* ---- ×ó±àÂëÆ÷ TIM2 ---- */
+	/* ---- å·¦ç¼–ç å™¨ TIM2 ---- */
 	TIM_ICInitStruct.TIM_Channel = TIM_Channel_1;
 	TIM_ICInit(ENCODER_LEFT_TIM,&TIM_ICInitStruct);
 	TIM_ICInitStruct.TIM_Channel = TIM_Channel_2;
 	TIM_ICInit(ENCODER_LEFT_TIM,&TIM_ICInitStruct);
 	TIM_EncoderInterfaceConfig(ENCODER_LEFT_TIM,TIM_EncoderMode_TI12,
-								TIM_ICPolarity_Rising,TIM_ICPolarity_Rising);//²»·´Ïà
+								TIM_ICPolarity_Rising,TIM_ICPolarity_Rising);//ä¸åç›¸
 	TIM_SetCounter(ENCODER_LEFT_TIM,0);
 	TIM_Cmd(ENCODER_LEFT_TIM,ENABLE);
 
 
-	/* ---- ÓÒ±àÂëÆ÷ TIM4 ---- */
+	/* ---- å³ç¼–ç å™¨ TIM4 ---- */
 	TIM_ICInitStruct.TIM_Channel = TIM_Channel_1;
 	TIM_ICInit(ENCODER_RIGHT_TIM,&TIM_ICInitStruct);
 	TIM_ICInitStruct.TIM_Channel = TIM_Channel_2;
@@ -105,37 +105,37 @@ void Encoder_Init(void)
 	TIM_Cmd(ENCODER_RIGHT_TIM,ENABLE);
 
 
-	//7.ÇåÔöÁ¿»º´æ
+	//7.æ¸…å¢é‡ç¼“å­˜
 	EncLeft_LastCounter = 0;
 	EncRight_LastCounter = 0;
 	EncLeft_DeltaCounter = 0;
 	EncRight_DeltaCounter = 0;
 }
 
-/* ==================== ²ÉÑù ==================== */
-/* ¹¦ÄÜ£º²ÉÑùÒ»´Î±àÂëÆ÷£¬Ë¢ĞÂ±¾ÖÜÆÚÔöÁ¿
- * ²ÎÊı£ºÎŞ
- * ·µ»Ø£ºÎŞ
- * ËµÃ÷£º°´¿ØÖÆÖÜÆÚµ÷ÓÃ£¬Ò»¸öÖÜÆÚÄÚÖ»µ÷Ò»´Î£¡£¡
+/* ==================== é‡‡æ · ==================== */
+/* åŠŸèƒ½ï¼šé‡‡æ ·ä¸€æ¬¡ç¼–ç å™¨ï¼Œåˆ·æ–°æœ¬å‘¨æœŸå¢é‡
+ * å‚æ•°ï¼šæ— 
+ * è¿”å›ï¼šæ— 
+ * è¯´æ˜ï¼šæŒ‰æ§åˆ¶å‘¨æœŸè°ƒç”¨ï¼Œä¸€ä¸ªå‘¨æœŸå†…åªè°ƒä¸€æ¬¡ï¼ï¼
  */
 void Encoder_Update(void)
 {
 	int16_t CurrCounter = 0;
-	//1.×óÂÖ£ºÏÈ×ªuint16ÔÙ×ªint16£¬16Î»¼ÆÊıÆ÷»ØÈÆÊ±ÔöÁ¿ÈÔÈ»ÕıÈ·
+	//1.å·¦è½®ï¼šå…ˆè½¬uint16å†è½¬int16ï¼Œ16ä½è®¡æ•°å™¨å›ç»•æ—¶å¢é‡ä»ç„¶æ­£ç¡®
 	CurrCounter = (int16_t)TIM_GetCounter(ENCODER_LEFT_TIM);
 	EncLeft_DeltaCounter = (int16_t)((uint16_t)CurrCounter - (uint16_t)EncLeft_LastCounter);
 	EncLeft_LastCounter = CurrCounter;
 
-	//2.ÓÒÂÖ£ºÍ¬ÉÏ
+	//2.å³è½®ï¼šåŒä¸Š
 	CurrCounter = (int16_t)TIM_GetCounter(ENCODER_RIGHT_TIM);
 	EncRight_DeltaCounter = (int16_t)((uint16_t)CurrCounter - (uint16_t)EncRight_LastCounter);
 	EncRight_LastCounter = CurrCounter;
 }
 
-/* ¹¦ÄÜ£º¶ÁÈ¡±¾ÖÜÆÚÔöÁ¿£¨¿ÉÖØ¸´¶ÁÈ¡£¬²»»áÇåÁã£©
- * ²ÎÊı£ºÎŞ
- * ·µ»Ø£º±¾ÖÜÆÚ±àÂëÆ÷ÔöÁ¿£¨counts£©£¬Õı=Õı×ª
- * ÓÃÍ¾£º´«¸øpidµ±ËÙ¶È»·¿ØÖÆ²ÎÊı
+/* åŠŸèƒ½ï¼šè¯»å–æœ¬å‘¨æœŸå¢é‡ï¼ˆå¯é‡å¤è¯»å–ï¼Œä¸ä¼šæ¸…é›¶ï¼‰
+ * å‚æ•°ï¼šæ— 
+ * è¿”å›ï¼šæœ¬å‘¨æœŸç¼–ç å™¨å¢é‡ï¼ˆcountsï¼‰ï¼Œæ­£=æ­£è½¬
+ * ç”¨é€”ï¼šä¼ ç»™pidå½“é€Ÿåº¦ç¯æ§åˆ¶å‚æ•°
  */
 int16_t Encoder_GetDeltaLeft(void)
 {
@@ -153,7 +153,7 @@ int16_t Encoder_GetDeltaRight(void)
 
 
 
-/* ==================== Ô­Ê¼¶ÁÊı£¨µ÷ÊÔÓÃ£© ==================== */
+/* ==================== åŸå§‹è¯»æ•°ï¼ˆè°ƒè¯•ç”¨ï¼‰ ==================== */
 int16_t Encoder_GetRawLeft(void)
 {
 	return (int16_t)TIM_GetCounter(ENCODER_LEFT_TIM);

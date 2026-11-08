@@ -1,14 +1,14 @@
-#include "stm32f10x.h"
+ï»¿#include "stm32f10x.h"
 #include "BlueTooth.h"
 #include <stdio.h>
-//ËõĞ´:bt -- bluetooth
+//ç¼©å†™:bt -- bluetooth
 
-#define BT_QUEUE_SIZE 	32					//À¶ÑÀ»·ĞÎ¶ÓÁĞ´óĞ¡(À¶ÑÀµ÷²Î)
-//×¢:±ØĞëÎª2µÄÃİ²Å¿ÉÊ¹ÓÃÎ»Óë½øĞĞ»·ĞÎ¶ÓÁĞÑ­»·
+#define BT_QUEUE_SIZE 	32					//è“ç‰™ç¯å½¢é˜Ÿåˆ—å¤§å°(è“ç‰™è°ƒå‚)
+//æ³¨:å¿…é¡»ä¸º2çš„å¹‚æ‰å¯ä½¿ç”¨ä½ä¸è¿›è¡Œç¯å½¢é˜Ÿåˆ—å¾ªç¯
 
-static uint8_t bt_rx_queue[BT_QUEUE_SIZE];	//¶Áµ½µÄÊı¾İ
-static volatile uint16_t bt_rx_head = 0;	// ÖĞ¶ÏÍùÕâÀïĞ´
-static volatile uint16_t bt_rx_tail = 0; 	// Ö÷Ñ­»·´ÓÕâÀï¶Á
+static uint8_t bt_rx_queue[BT_QUEUE_SIZE];	//è¯»åˆ°çš„æ•°æ®
+static volatile uint16_t bt_rx_head = 0;	// ä¸­æ–­å¾€è¿™é‡Œå†™
+static volatile uint16_t bt_rx_tail = 0; 	// ä¸»å¾ªç¯ä»è¿™é‡Œè¯»
 
 
 void BlueTooth_Init(void)
@@ -59,7 +59,7 @@ void USART2_IRQHandler(void)
 
 uint8_t BlueTooth_ReadByte(uint8_t *data)
 {
-	if(bt_rx_head == bt_rx_tail) return 0;//ÎŞÊı¾İĞè·¢ËÍ
+	if(bt_rx_head == bt_rx_tail) return 0;//æ— æ•°æ®éœ€å‘é€
 
 	*data = bt_rx_queue[bt_rx_tail];
 	bt_rx_tail = (bt_rx_tail + 1) & (BT_QUEUE_SIZE - 1);

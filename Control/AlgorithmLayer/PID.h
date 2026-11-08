@@ -1,18 +1,18 @@
-#ifndef __PID_H
+ï»¿#ifndef __PID_H
 #define __PID_H
 #include <stdint.h>
 
 
-/* ==================== ËÙ¶È»·£¨PI£© ==================== */
+/* ==================== é€Ÿåº¦ç¯ï¼ˆPIï¼‰ ==================== */
 typedef struct
 {
-	float Kp;				//±ÈÀıÏîÏµÊı
-	float Ki;				//»ı·ÖÏîÏµÊı
-	float err;				//±¾´ÎÎó²î
-	float err_integral;		//Îó²î»ı·ÖÀÛ¼ÓÖµ
-	float output;			//±¾´ÎÊä³ö
-	float output_max;		//Êä³öÉÏÏŞ£¨¡ë£©£¬È¡ÖµÓ¦Óë Motor.h µÄ MOTOR_DUTY_FULLSCALE Ò»ÖÂ
-	float output_min;		//Êä³öÏÂÏŞ£¨¡ë£¬´«¸ºÖµ£©
+	float Kp;				//æ¯”ä¾‹é¡¹ç³»æ•°
+	float Ki;				//ç§¯åˆ†é¡¹ç³»æ•°
+	float err;				//æœ¬æ¬¡è¯¯å·®
+	float err_integral;		//è¯¯å·®ç§¯åˆ†ç´¯åŠ å€¼
+	float output;			//æœ¬æ¬¡è¾“å‡º
+	float output_max;		//è¾“å‡ºä¸Šé™ï¼ˆâ€°ï¼‰ï¼Œå–å€¼åº”ä¸ Motor.h çš„ MOTOR_DUTY_FULLSCALE ä¸€è‡´
+	float output_min;		//è¾“å‡ºä¸‹é™ï¼ˆâ€°ï¼Œä¼ è´Ÿå€¼ï¼‰
 }pid_velocity_t;
 
 void PID_VelocityLoop_Init(pid_velocity_t *pid_v , float Kp , float Ki , float output_max , float output_min);
@@ -22,17 +22,17 @@ float PID_V_Calc(pid_velocity_t *pid_v , float actual , float target);
 
 
 
-/* ==================== Ñ­¼£»·£¨PD£© ==================== */
+/* ==================== å¾ªè¿¹ç¯ï¼ˆPDï¼‰ ==================== */
 typedef struct
 {
-	float Kp;				//±ÈÀıÏîÏµÊı
-	float Kd;				//Î¢·ÖÏîÏµÊı
-	float err;				//±¾´ÎÆ«²î
-	float err_last;			//ÉÏ´ÎÆ«²î
-	float output;			//±¾´ÎÊä³ö
-	float output_max;		//Êä³öÉÏÏŞ
-	float output_min;		//Êä³öÏÂÏŞ
-	uint8_t isFirstRun;		//Ê×ÖÜÆÚ±êÖ¾£ºÆÁ±ÎÆô¶¯Ë²¼äµÄDÏî³å»÷
+	float Kp;				//æ¯”ä¾‹é¡¹ç³»æ•°
+	float Kd;				//å¾®åˆ†é¡¹ç³»æ•°
+	float err;				//æœ¬æ¬¡åå·®
+	float err_last;			//ä¸Šæ¬¡åå·®
+	float output;			//æœ¬æ¬¡è¾“å‡º
+	float output_max;		//è¾“å‡ºä¸Šé™
+	float output_min;		//è¾“å‡ºä¸‹é™
+	uint8_t isFirstRun;		//é¦–å‘¨æœŸæ ‡å¿—ï¼šå±è”½å¯åŠ¨ç¬é—´çš„Dé¡¹å†²å‡»
 }pid_line_t;
 
 void PID_LineLoop_Init(pid_line_t *pid_l , float Kp , float Kd , float output_max , float output_min);

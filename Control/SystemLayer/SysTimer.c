@@ -1,4 +1,4 @@
-//й╠╪Д╢адё©И
+О╩©//Ф≈╤И≈╢Ф┬ЁФ╗║Е²≈
 #include "stm32f10x.h"
 #include "SysTimer.h"
 
@@ -17,7 +17,7 @@ void SysTimer_Init(void)
 {
 	RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM3,ENABLE);
 
-	//1msй╠╩Ыё╨72MHz / (71+1) / (999+1) = 1000Hz
+	//1msФ≈╤Е÷╨О╪ 72MHz / (71+1) / (999+1) = 1000Hz
 	TIM_TimeBaseInitTypeDef TIM_TimeBaseInitStruct;
 	TIM_TimeBaseInitStruct.TIM_ClockDivision = TIM_CKD_DIV1;
 	TIM_TimeBaseInitStruct.TIM_CounterMode = TIM_CounterMode_Up;

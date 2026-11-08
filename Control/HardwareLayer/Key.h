@@ -1,10 +1,10 @@
-#ifndef __KEY_H
+ï»¿#ifndef __KEY_H
 #define __KEY_H
 
 #include "stm32f10x.h"
 
 void Key_Init(void);
-//°Ñµ±Ç°ÏµÍ³Ê±¼ä´Á×÷Îª²ÎÊı´«½øÀ´
+//æŠŠå½“å‰ç³»ç»Ÿæ—¶é—´æˆ³ä½œä¸ºå‚æ•°ä¼ è¿›æ¥
 void Key_CheckRequest(uint32_t current_tick); 
 uint8_t Key_GetRequest(void);
 
