@@ -1,9 +1,9 @@
-#ifndef __SERVICE_H
+ï»¿#ifndef __SERVICE_H
 #define __SERVICE_H
 
 #include "Encoder.h"
 #include "Motor.h"
-#include "Key.h"//ºóÃæÉ¾µô
+#include "Key.h"//åé¢åˆ æ‰
 #include "Voice.h"
 #include "BlueTooth.h"
 #include "ReceiverK210.h"
@@ -12,12 +12,13 @@
 #include "Protocol.h"
 #include "Debug.h"
 #include "WatchDog.h"
+#include "IndicatorLED.h"
 
-void Service_Init(void);					//³õÊ¼»¯
-void ServiceTask_Idle(void);				//Î¹¹·
-void ServiceTask_5ms(uint32_t curr_ms);  	//ÄÚ»·ËÙ¶È»·¿ØÖÆ
-void ServiceTask_10ms(uint32_t curr_ms); 	//¶ÁÈ¡¿ª¹Ø×´Ì¬
-void ServiceTask_30ms(uint32_t curr_ms); 	//Íâ»··½Ïò»·¿ØÖÆ
-void ServiceTask_100ms(uint32_t curr_ms);	//¿ª¹Ø¿ØÖÆ
-uint32_t Service_Clock(void);				//ÏµÍ³Ê±ÖÓ
+void Service_Init(void);					//åˆå§‹åŒ–
+void ServiceTask_Idle(void);				//å–‚ç‹—
+void ServiceTask_5ms(uint32_t curr_ms);  	//å†…ç¯é€Ÿåº¦ç¯æ§åˆ¶
+void ServiceTask_10ms(uint32_t curr_ms); 	//è¯»å–å¼€å…³çŠ¶æ€
+void ServiceTask_30ms(uint32_t curr_ms); 	//å¤–ç¯æ–¹å‘ç¯æ§åˆ¶
+void ServiceTask_100ms(uint32_t curr_ms);	//å¼€å…³æ§åˆ¶
+uint32_t Service_Clock(void);				//ç³»ç»Ÿæ—¶é’Ÿ
 #endif

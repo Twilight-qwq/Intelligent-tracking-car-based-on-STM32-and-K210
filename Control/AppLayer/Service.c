@@ -1,13 +1,15 @@
-#include <stdint.h>
+ï»¿#include <stdint.h>
 #include <stdlib.h>
 #include <math.h>
 #include "Service.h"
-static void Handle_StartStopCmd(void);
-static void Handle_CarStop(void);
-static void Handle_BtTuning(void);
-static void Send_Telemetry(void);
-static uint8_t Fetch_VisionData(VisionData_t *vis_data);
-static void Calculate_TargetSpeed(VisionData_t *vis_data);
+
+static void Task_StartStopCmd(void);
+static void Task_CarStop(void);
+static void Task_BtTuning(void);
+static void Task_SendTelemetry(void);
+static uint8_t Task_FetchVisionData(VisionData_t *vis_data);
+static void Task_CalculateTargetSpeed(VisionData_t *vis_data);
+static void Task_Indicate(void);
 
 static uint32_t task_last_5ms = 0;
 static uint32_t task_last_10ms = 0;
@@ -19,14 +21,19 @@ static pid_velocity_t pid_v_right;
 static pid_line_t pid_l;
 
 static uint8_t CarRun_State = 0;
-static float Speed_Straight   = 40.0f; //Ö±µÀ»ùËÙ
-static float Speed_SmallAngle = 25.0f; //Ğ¡½Ç¶È(Ö±½Ç,¶Û½Ç)»ùËÙ
-static float Speed_LargeAngle = 15.0f; //´ó½Ç¶È(Èñ½Ç)»ùËÙ
+static float Speed_Straight   = 40.0f; //ç›´é“åŸºé€Ÿ
+static float Speed_SmallAngle = 25.0f; //å°è§’åº¦(ç›´è§’,é’è§’)åŸºé€Ÿ
+static float Speed_LargeAngle = 15.0f; //å¤§è§’åº¦(é”è§’)åŸºé€Ÿ
 static float target_left = 0.0f;
 static float target_right = 0.0f;
 static float actual_left = 0.0f;
 static float actual_right = 0.0f;
-static float last_vision_error = 0.0f; // ÓÃÓÚ¼ÇÂ¼ÉÏÒ»´ÎµÄÊÓ¾õÎó²î£¬¸ø 100ms ·¢²¨ĞÎ
+static float last_vision_error = 0.0f; // ç”¨äºè®°å½•ä¸Šä¸€æ¬¡çš„è§†è§‰è¯¯å·®ï¼Œç»™ 100ms å‘æ³¢å½¢
+
+static uint8_t  Indicator_Tick    = 0;   //é—ªçƒè®¡æ•°
+static uint8_t  Indicator_Fault   = 0;   //è§†è§‰æ–­çº¿é”å­˜, æ”¶åˆ°æ–°æ•°æ®æ‰æ¸…é™¤
+static uint32_t Vision_LastTick   = 0;   //æœ€åä¸€æ¬¡æ”¶åˆ°è§†è§‰æ•°æ®çš„æ—¶åˆ»
+static uint8_t  CarRun_PrevState  = 0;   //ä¸Šä¸€æ¬¡çš„è¿è¡ŒçŠ¶æ€, ç”¨äºæ•æ‰å¯åŠ¨ç¬é—´
 
 uint32_t Service_Clock(void)
 {
@@ -38,15 +45,16 @@ void Service_Init(void)
 	NVIC_PriorityGroupConfig(NVIC_PriorityGroup_2);
 	Encoder_Init();
 	Motor_Init();
-	Key_Init();//ºóÃæÉ¾µô»»³ÉÓïÒôÄ£¿é
+	Key_Init();//åé¢åˆ æ‰æ¢æˆè¯­éŸ³æ¨¡å—
 	Voice_Init();
 	BlueTooth_Init();
 	Debug_Init();
+	Indicator_Init();
 	k210rcv_Init();
 	SysTimer_Init();
-	PID_VelocityLoop_Init(&pid_v_left,0,0,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//ºóÃæÔÙµ÷²Î
-	PID_VelocityLoop_Init(&pid_v_right,0,0,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//ºóÃæÔÙµ÷²Î
-	PID_LineLoop_Init(&pid_l,0,0,Speed_Straight,-(float)Speed_Straight);//ºóÃæÔÙµ÷²Î
+	PID_VelocityLoop_Init(&pid_v_left,0,0,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//åé¢å†è°ƒå‚
+	PID_VelocityLoop_Init(&pid_v_right,0,0,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//åé¢å†è°ƒå‚
+	PID_LineLoop_Init(&pid_l,0,0,Speed_Straight,-(float)Speed_Straight);//åé¢å†è°ƒå‚
 	WatchDog_Init();
 }
 
@@ -57,10 +65,10 @@ void ServiceTask_Idle(void)
 }
 
 
-void ServiceTask_5ms(uint32_t curr_ms)//ÄÚ»·ËÙ¶È»·¿ØÖÆ
+void ServiceTask_5ms(uint32_t curr_ms)//å†…ç¯é€Ÿåº¦ç¯æ§åˆ¶
 {
 	if(curr_ms - task_last_5ms < 5) return;
-    task_last_5ms = curr_ms; //ÖØÖÃÄÖÖÓ
+    task_last_5ms = curr_ms; //é‡ç½®é—¹é’Ÿ
 
 	Encoder_Update();
 	actual_left  = (float)Encoder_GetDeltaLeft();
@@ -74,15 +82,15 @@ void ServiceTask_5ms(uint32_t curr_ms)//ÄÚ»·ËÙ¶È»·¿ØÖÆ
 }
 
 
-void ServiceTask_30ms(uint32_t curr_ms)//Íâ»··½Ïò»·¿ØÖÆ
+void ServiceTask_30ms(uint32_t curr_ms)//å¤–ç¯æ–¹å‘ç¯æ§åˆ¶
 {
 	if(curr_ms - task_last_30ms < 30) return;
     task_last_30ms = curr_ms;
     if(CarRun_State == 0) return;
 
     VisionData_t vis_data;
-    if(Fetch_VisionData(&vis_data) == 0) return;//Ã»ÄÃµ½ĞÂÊı¾İÖ±½Ó½áÊø±ÜÃâÓÃ¾ÉÊı¾İËã
-    Calculate_TargetSpeed(&vis_data);
+    if(Task_FetchVisionData(&vis_data) == 0) return;//æ²¡æ‹¿åˆ°æ–°æ•°æ®ç›´æ¥ç»“æŸé¿å…ç”¨æ—§æ•°æ®ç®—
+    Task_CalculateTargetSpeed(&vis_data);
 }
 
 
@@ -95,49 +103,38 @@ void ServiceTask_10ms(uint32_t curr_ms)
 }
 
 
-void ServiceTask_100ms(uint32_t curr_ms)//¿ª¹Ø¿ØÖÆÓëÊı¾İ·¢ËÍ
+void ServiceTask_100ms(uint32_t curr_ms)//å¼€å…³æ§åˆ¶ä¸æ•°æ®å‘é€
 {
 	
     if(curr_ms - task_last_100ms < 100) return;
     task_last_100ms = curr_ms;
 
-    Handle_StartStopCmd();//1.»ñÈ¡ÆôÍ£Ö¸Áî
-    if(CarRun_State == 0) Handle_CarStop();//2.Èç¹ûÍ£³µÁËÖ´ĞĞ°²È«ÇåÀí
-    Handle_BtTuning();//3.¼ì²éÊÖ»úÀ¶ÑÀÓĞÃ»ÓĞ·¢À´µ÷²ÎÖ¸Áî
-    Send_Telemetry();//4.ÍùVOFA+·¢ËÍ²¨ĞÎÊı¾İ
+    Task_StartStopCmd();//1.è·å–å¯åœæŒ‡ä»¤
+    if(CarRun_State == 0) Task_CarStop();//2.å¦‚æœåœè½¦äº†æ‰§è¡Œå®‰å…¨æ¸…ç†
+    Task_BtTuning();//3.æ£€æŸ¥æ‰‹æœºè“ç‰™æœ‰æ²¡æœ‰å‘æ¥è°ƒå‚æŒ‡ä»¤
+    Task_SendTelemetry();//4.å¾€VOFA+å‘é€æ³¢å½¢æ•°æ®
+    Task_Indicate();//5.åˆ·æ–°æ¿è½½ç¯çŠ¶æ€
 }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-// 1. ´¦ÀíÎïÀí°´¼üÆôÍ£(100ms)
-static void Handle_StartStopCmd(void)
+// 1. å¤„ç†ç‰©ç†æŒ‰é”®å¯åœ(100ms)
+static void Task_StartStopCmd(void)
 {
-    // Ä¿Ç°£º´¦ÀíÎïÀí°´¼ü
+    // ç›®å‰ï¼šå¤„ç†ç‰©ç†æŒ‰é”®
     if(Key_GetRequest() == 1)
     {
         CarRun_State = !CarRun_State;   
     }
 
-    /* Î´À´ÔÚÕâÀïÖ±½Ó¼ÓÉÏÓïÒôµÄ´úÂë£¬ÎŞĞè¸Ä¶¯ÆäËûÈÎºÎµØ·½£º
+    /* æœªæ¥åœ¨è¿™é‡Œç›´æ¥åŠ ä¸Šè¯­éŸ³çš„ä»£ç ï¼Œæ— éœ€æ”¹åŠ¨å…¶ä»–ä»»ä½•åœ°æ–¹ï¼š
     uint8_t voice_cmd = Voice_GetCommand();
     if (voice_cmd == 0x01) CarRun_State = 1;
     else if (voice_cmd == 0x02) CarRun_State = 0;
     */
 }
 
-//2.Í£³µÊ±µÄ°²È«ÇåÀí,·ÀÖ¹»ı·Ö±¥ºÍ(100ms)
-static void Handle_CarStop(void)
+//2.åœè½¦æ—¶çš„å®‰å…¨æ¸…ç†,é˜²æ­¢ç§¯åˆ†é¥±å’Œ(100ms)
+static void Task_CarStop(void)
 {
     Motor_SetDuty(0,0);
     target_left = 0;
@@ -151,14 +148,14 @@ static void Handle_CarStop(void)
 }
 
 
-//À¶ÑÀµ÷²Î·¶Î§ÏŞÖÆ(²ÎÊıÉÏÏŞ/ÏÂÏŞ)
-#define LIMIT_V_KP_MAX      10.0f  //ÄÚ»·ËÙ¶È»·KpÉÏÏŞ
-#define LIMIT_V_KI_MAX      10.0f  //ÄÚ»·ËÙ¶È»·KiÉÏÏŞ
-#define LIMIT_LINE_KP_MAX   50.0f  //Íâ»··½Ïò»·KpÉÏÏŞ
-#define LIMIT_LINE_KD_MAX   100.0f //Íâ»··½Ïò»·KdÉÏÏŞ
-#define LIMIT_SPEED_MAX     100.0f //»ù´¡ËÙ¶ÈÉÏÏŞ
-//3.´¦ÀíÀ¶ÑÀµ÷²ÎÖ¸Áî(100ms)
-static void Handle_BtTuning(void)
+//è“ç‰™è°ƒå‚èŒƒå›´é™åˆ¶(å‚æ•°ä¸Šé™/ä¸‹é™)
+#define LIMIT_V_KP_MAX      10.0f  //å†…ç¯é€Ÿåº¦ç¯Kpä¸Šé™
+#define LIMIT_V_KI_MAX      10.0f  //å†…ç¯é€Ÿåº¦ç¯Kiä¸Šé™
+#define LIMIT_LINE_KP_MAX   50.0f  //å¤–ç¯æ–¹å‘ç¯Kpä¸Šé™
+#define LIMIT_LINE_KD_MAX   100.0f //å¤–ç¯æ–¹å‘ç¯Kdä¸Šé™
+#define LIMIT_SPEED_MAX     100.0f //åŸºç¡€é€Ÿåº¦ä¸Šé™
+//3.å¤„ç†è“ç‰™è°ƒå‚æŒ‡ä»¤(100ms)
+static void Task_BtTuning(void)
 {
     uint8_t rx_byte;
     BtCommand_t bt_cmd;
@@ -167,16 +164,16 @@ static void Handle_BtTuning(void)
     {
         if (Protocol_BtParse(rx_byte, &bt_cmd) == 1)
         {
-            //µÚÒ»µÀ°²¼ì:À¹½ØÎŞÇî´ó(Inf)ºÍ·ÇÊı×Ö(NaN)µÄÂÒÂë
+            //ç¬¬ä¸€é“å®‰æ£€:æ‹¦æˆªæ— ç©·å¤§(Inf)å’Œéæ•°å­—(NaN)çš„ä¹±ç 
             if (!(bt_cmd.param_val > -1e6f && bt_cmd.param_val < 1e6f))
             {
-                continue; //·¢ÏÖÒì³£Ö±½ÓÈÓµôÕâ°ü,²»Ö´ĞĞÏÂÃæµÄswitch
+                continue; //å‘ç°å¼‚å¸¸ç›´æ¥æ‰”æ‰è¿™åŒ…,ä¸æ‰§è¡Œä¸‹é¢çš„switch
             }
 
             switch(bt_cmd.cmd_type)
             {
-                //µÚ¶şµÀ°²¼ì:¶ÔÃ¿Àà²ÎÊıÉè¶¨ºÏÀíÉÏÏÂÏŞ
-                //ÄÚ»·ËÙ¶È»·
+                //ç¬¬äºŒé“å®‰æ£€:å¯¹æ¯ç±»å‚æ•°è®¾å®šåˆç†ä¸Šä¸‹é™
+                //å†…ç¯é€Ÿåº¦ç¯
                 case BT_CMD_SET_V_L_KP: 
                     if (bt_cmd.param_val >= 0.0f && bt_cmd.param_val <= LIMIT_V_KP_MAX) pid_v_left.Kp = bt_cmd.param_val; 
                     break;
@@ -190,7 +187,7 @@ static void Handle_BtTuning(void)
                     if (bt_cmd.param_val >= 0.0f && bt_cmd.param_val <= LIMIT_V_KI_MAX) pid_v_right.Ki = bt_cmd.param_val; 
                     break;
                 
-                //Íâ»··½Ïò»·
+                //å¤–ç¯æ–¹å‘ç¯
                 case BT_CMD_SET_LINE_KP: 
                     if (bt_cmd.param_val >= 0.0f && bt_cmd.param_val <= LIMIT_LINE_KP_MAX) pid_l.Kp = bt_cmd.param_val; 
                     break;
@@ -198,7 +195,7 @@ static void Handle_BtTuning(void)
                     if (bt_cmd.param_val >= 0.0f && bt_cmd.param_val <= LIMIT_LINE_KD_MAX) pid_l.Kd = bt_cmd.param_val; 
                     break;
                 
-                //»ù´¡ËÙ¶È
+                //åŸºç¡€é€Ÿåº¦
                 case BT_CMD_SET_SPD_STRA:  
                     if (bt_cmd.param_val >= 0.0f && bt_cmd.param_val <= LIMIT_SPEED_MAX) Speed_Straight = bt_cmd.param_val; 
                     break;
@@ -209,63 +206,65 @@ static void Handle_BtTuning(void)
                     if (bt_cmd.param_val >= 0.0f && bt_cmd.param_val <= LIMIT_SPEED_MAX) Speed_LargeAngle = bt_cmd.param_val; 
                     break;
                 
-                default: break;//·ÇÖ¸Áî¼¯ÔªËØ²»Ö´ĞĞ
+                default: break;//éæŒ‡ä»¤é›†å…ƒç´ ä¸æ‰§è¡Œ
             }
         }
     }
 }
 
-//4.·¢ËÍ VOFA+µ÷ÊÔ²¨ĞÎ(100ms)
-static void Send_Telemetry(void)
+//4.å‘é€ VOFA+è°ƒè¯•æ³¢å½¢(100ms)
+static void Task_SendTelemetry(void)
 {
     debugdata_t data;
     data.target_left  = target_left;
     data.actual_left  = actual_left;
     data.target_right = target_right;
     data.actual_right = actual_right;
-    data.error        = last_vision_error; // Ê¹ÓÃ¸Õ²Å¼ÇÂ¼µÄÎó²î
+    data.error        = last_vision_error; // ä½¿ç”¨åˆšæ‰è®°å½•çš„è¯¯å·®
     Debug_log(&data);
 }
 
-// 5. »ñÈ¡ÊÓ¾õÊı¾İÓë¶ª°ü±£»¤(30ms)
-static uint8_t Fetch_VisionData(VisionData_t *vis_data)
+// 5. è·å–è§†è§‰æ•°æ®ä¸ä¸¢åŒ…ä¿æŠ¤(30ms)
+static uint8_t Task_FetchVisionData(VisionData_t *vis_data)
 {
     static uint8_t lostdata_time = 0; 
     
-    if(Protocol_GetVision(vis_data) == 0)//Ã»ÓĞĞÂÊı¾İ
+    if(Protocol_GetVision(vis_data) == 0)//æ²¡æœ‰æ–°æ•°æ®
     {
         lostdata_time++;
         if(lostdata_time > 3)
         {
-            CarRun_State = 0;//·ÀÖ¹ÉãÏñÍ·³öÎÊÌâÁËĞ¡³µ»¹ÔÚÅÜ
+            CarRun_State = 0;//é˜²æ­¢æ‘„åƒå¤´å‡ºé—®é¢˜äº†å°è½¦è¿˜åœ¨è·‘
             Motor_SetDuty(0,0);
             lostdata_time = 0;
         }
-        return 0; // Ã»ÄÃµ½
+        return 0; // æ²¡æ‹¿åˆ°
     }
     
-    lostdata_time = 0;//ÊÕµ½Êı¾İ,Çå¿Õ³¬Ê±¼ÆÊı
-    return 1; // ÄÃµ½ÁË
+    lostdata_time = 0;//æ”¶åˆ°æ•°æ®,æ¸…ç©ºè¶…æ—¶è®¡æ•°
+    Vision_LastTick  = Service_Clock();//è®°å½•è§†è§‰å­˜æ´»æ—¶åˆ», ä¾›æ¿è½½ç¯åˆ¤æ–­æ–­çº¿
+    Indicator_Fault  = 0;
+    return 1; // æ‹¿åˆ°äº†
 }
 
-// 6. ¼ÆËã·½Ïò»·Óë¿ØÖÆÊä³ö(30ms)
-static void Calculate_TargetSpeed(VisionData_t *vis_data)
+// 6. è®¡ç®—æ–¹å‘ç¯ä¸æ§åˆ¶è¾“å‡º(30ms)
+static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
 {
-    // ¸üĞÂÓÃÓÚDebug·¢²¨ĞÎµÄÎó²î
+    // æ›´æ–°ç”¨äºDebugå‘æ³¢å½¢çš„è¯¯å·®
     float error = (float)vis_data->error;
     last_vision_error = error;
 
     if(fabsf(error)<=3)
     {
-        error = 0.0f;//ºöÂÔÏ¸Î¢¶¶¶¯
+        error = 0.0f;//å¿½ç•¥ç»†å¾®æŠ–åŠ¨
     }
 
-    float turn = PID_L_Calc(&pid_l,error);//²îËÙ´óĞ¡
+    float turn = PID_L_Calc(&pid_l,error);//å·®é€Ÿå¤§å°
     float base_speed = Speed_Straight;
 
     switch (vis_data->car_state)
     {
-    case 1://Ö±½ÇÍä»ò¶Û½ÇÍä
+    case 1://ç›´è§’å¼¯æˆ–é’è§’å¼¯
         base_speed = Speed_SmallAngle;
         break;
     case 2:
@@ -281,4 +280,45 @@ static void Calculate_TargetSpeed(VisionData_t *vis_data)
     if (turn < -base_speed) turn = -base_speed;
     target_left = base_speed + turn;
     target_right = base_speed - turn;
+}
+
+//7.æ¿è½½ LED çŠ¶æ€æŒ‡ç¤º(100ms)
+#define INDICATE_SLOW_TICKS     5       //æ…¢é—ª: 5 x 100ms = 500ms ç¿»è½¬ä¸€æ¬¡
+#define INDICATE_FAST_TICKS     1       //å¿«é—ª: 1 x 100ms = 100ms ç¿»è½¬ä¸€æ¬¡
+#define INDICATE_VISION_LOST_MS 120     //è¶…è¿‡è¯¥æ—¶é—´æ²¡æ”¶åˆ°è§†è§‰æ•°æ®å³åˆ¤å®šæ–­çº¿(ä¸ä¸¢åŒ…åˆ¤å®šä¸€è‡´)
+
+static void Task_Indicate(void)
+{
+    uint32_t now_ms = Service_Clock();
+    uint8_t  blink_ticks;
+
+    //å¯åŠ¨ç¬é—´é‡æ–°è®¡æ—¶, é¿å…ä¸Šç”µæœŸé—´çš„ç©ºçª—è¢«åˆ¤æˆæ–­çº¿
+    if (CarRun_State == 1 && CarRun_PrevState == 0)
+    {
+        Vision_LastTick = now_ms;
+    }
+    CarRun_PrevState = CarRun_State;
+
+    //åªåœ¨è¿è¡Œä¸­åˆ¤è¶…æ—¶; åœè½¦åä¿ç•™æ•…éšœæ ‡å¿—, æ–¹ä¾¿èµ›åçœ‹å‡ºæ˜¯æ‘„åƒå¤´å‡ºé—®é¢˜
+    if (CarRun_State == 1 && (now_ms - Vision_LastTick) > INDICATE_VISION_LOST_MS)
+    {
+        Indicator_Fault = 1;
+    }
+
+    //è¿è¡Œä¸­ä¸”è§†è§‰æ­£å¸¸ -> å¸¸äº®
+    if (CarRun_State == 1 && Indicator_Fault == 0)
+    {
+        Indicator_Tick = 0;
+        Indicator_TurnOn();
+        return;
+    }
+
+    //è§†è§‰æ–­çº¿å¿«é—ª, å¦åˆ™æ…¢é—ª
+    blink_ticks = (Indicator_Fault == 1) ? INDICATE_FAST_TICKS : INDICATE_SLOW_TICKS;
+    Indicator_Tick++;
+    if (Indicator_Tick >= blink_ticks)
+    {
+        Indicator_Tick = 0;
+        Indicator_Toggle();
+    }
 }

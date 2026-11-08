@@ -779,6 +779,16 @@
               <FileType>5</FileType>
               <FilePath>.\HardwareLayer\WatchDog.h</FilePath>
             </File>
+            <File>
+              <FileName>IndicatorLED.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\HardwareLayer\IndicatorLED.c</FilePath>
+            </File>
+            <File>
+              <FileName>IndicatorLED.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\HardwareLayer\IndicatorLED.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
