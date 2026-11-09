@@ -1,6 +1,5 @@
 ﻿#include "stm32f10x.h"
 #include "BlueTooth.h"
-#include <stdio.h>
 //缩写:bt -- bluetooth
 
 #define BT_QUEUE_SIZE 	32					//蓝牙环形队列大小(蓝牙调参)
@@ -15,11 +14,9 @@ void BlueTooth_Init(void)
 {
 	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA,ENABLE);
 
+	/* 本文件只负责接收脚 PA3。
+	 * 发送脚 PA2 由 Debug.c 的 Debug_Init() 配置（对应 VOFA+ 波形输出）。 */
 	GPIO_InitTypeDef GPIO_InitStruct;
-	GPIO_InitStruct.GPIO_Mode=GPIO_Mode_AF_PP;
-	GPIO_InitStruct.GPIO_Pin=GPIO_Pin_2;
-	GPIO_InitStruct.GPIO_Speed=GPIO_Speed_50MHz;
-	GPIO_Init(GPIOA,&GPIO_InitStruct);
 	GPIO_InitStruct.GPIO_Mode=GPIO_Mode_IPU;
 	GPIO_InitStruct.GPIO_Pin=GPIO_Pin_3;
 	GPIO_InitStruct.GPIO_Speed=GPIO_Speed_50MHz;

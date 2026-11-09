@@ -5,11 +5,12 @@
 
 static void Task_StartStopCmd(void);
 static void Task_CarStop(void);
-static void Task_BtTuning(void);
+static void Task_BtCommand(void);
 static void Task_SendTelemetry(void);
 static uint8_t Task_FetchVisionData(VisionData_t *vis_data);
 static void Task_CalculateTargetSpeed(VisionData_t *vis_data);
 static void Task_Indicate(void);
+static void CarRun_Set(uint8_t run);
 
 static uint32_t task_last_5ms = 0;
 static uint32_t task_last_10ms = 0;
@@ -21,6 +22,16 @@ static pid_velocity_t pid_v_right;
 static pid_line_t pid_l;
 
 static uint8_t CarRun_State = 0;
+
+/* 启停状态的唯一写入口。
+ * 按键是"按一次翻转一次", 蓝牙是"明确要求运行或停车",
+ * 两种语义不同, 但最终都落到这里。
+ * 以后把按键换成蓝牙, 只需要换掉调用者, 状态机本身不用动。 */
+static void CarRun_Set(uint8_t run)
+{
+    CarRun_State = (run != 0) ? 1 : 0;
+}
+
 static float Speed_Straight   = 40.0f; //直道基速
 static float Speed_SmallAngle = 25.0f; //小角度(直角,钝角)基速
 static float Speed_LargeAngle = 15.0f; //大角度(锐角)基速
@@ -55,7 +66,8 @@ void Service_Init(void)
 	PID_VelocityLoop_Init(&pid_v_left,0,0,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//后面再调参
 	PID_VelocityLoop_Init(&pid_v_right,0,0,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//后面再调参
 	PID_LineLoop_Init(&pid_l,0,0,Speed_Straight,-(float)Speed_Straight);//后面再调参
-	WatchDog_Init();
+	//Kp 上限 ≈ 1 / (k × 死区时间)
+    WatchDog_Init();
 }
 
 
@@ -109,21 +121,21 @@ void ServiceTask_100ms(uint32_t curr_ms)//开关控制与数据发送
     if(curr_ms - task_last_100ms < 100) return;
     task_last_100ms = curr_ms;
 
-    Task_StartStopCmd();//1.获取启停指令
-    if(CarRun_State == 0) Task_CarStop();//2.如果停车了执行安全清理
-    Task_BtTuning();//3.检查手机蓝牙有没有发来调参指令
+    Task_StartStopCmd();//1.按键启停请求
+    Task_BtCommand();//2.蓝牙指令: 启停 + 调参
+    if(CarRun_State == 0) Task_CarStop();//3.停车安全清理(必须放在读取指令之后)
     Task_SendTelemetry();//4.往VOFA+发送波形数据
     Task_Indicate();//5.刷新板载灯状态
 }
 
 
-// 1. 处理物理按键启停(100ms)
+// 1. 处理启停请求: 物理按键(100ms)
 static void Task_StartStopCmd(void)
 {
     // 目前：处理物理按键
     if(Key_GetRequest() == 1)
     {
-        CarRun_State = !CarRun_State;   
+        CarRun_Set(!CarRun_State);
     }
 
     /* 未来在这里直接加上语音的代码，无需改动其他任何地方：
@@ -154,8 +166,8 @@ static void Task_CarStop(void)
 #define LIMIT_LINE_KP_MAX   50.0f  //外环方向环Kp上限
 #define LIMIT_LINE_KD_MAX   100.0f //外环方向环Kd上限
 #define LIMIT_SPEED_MAX     100.0f //基础速度上限
-//3.处理蓝牙调参指令(100ms)
-static void Task_BtTuning(void)
+//3.处理蓝牙指令: 启停 + 调参(100ms)
+static void Task_BtCommand(void)
 {
     uint8_t rx_byte;
     BtCommand_t bt_cmd;
@@ -172,6 +184,11 @@ static void Task_BtTuning(void)
 
             switch(bt_cmd.cmd_type)
             {
+                //运行控制: 0.0=停车, 1.0=启动 (与按键共用 CarRun_State)
+                case BT_CMD_SET_RUN_STATE: 
+                    CarRun_Set((uint8_t)(bt_cmd.param_val > 0.5f)); 
+                    break;
+                
                 //第二道安检:对每类参数设定合理上下限
                 //内环速度环
                 case BT_CMD_SET_V_L_KP: 

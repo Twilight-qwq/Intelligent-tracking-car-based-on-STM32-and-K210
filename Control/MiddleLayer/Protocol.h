@@ -33,6 +33,8 @@ uint8_t Protocol_GetVision(VisionData_t *out_data);
 #define BT_CMD_SET_SPD_STRA     0x07  // 直道基础速度
 #define BT_CMD_SET_SPD_SMALL    0x08  // 小角度弯 (直角/钝角)
 #define BT_CMD_SET_SPD_LARGE    0x09  // 大角度弯 (锐角)
+// 运行控制 (启停)
+#define BT_CMD_SET_RUN_STATE    0x0A  // 1.0=启动 0.0=停车 (与按键共用 CarRun_State)
 
 
 typedef struct {

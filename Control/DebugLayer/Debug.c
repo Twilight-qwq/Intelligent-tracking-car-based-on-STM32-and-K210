@@ -1,6 +1,5 @@
 ﻿#include "stm32f10x.h"
 #include "Debug.h"
-#include <stdio.h>
 #include <string.h>
 
 
@@ -27,6 +26,19 @@ static const uint8_t vofa_frame_tail[] = {0x00, 0x00, 0x80, 0x7F};
 void Debug_Init(void)
 {
 	RCC_AHBPeriphClockCmd(RCC_AHBPeriph_DMA1,ENABLE);
+
+	/* USART2 发送脚 PA2 由本文件负责配置；
+	 * 接收脚 PA3 与串口参数由 BlueTooth.c 的 BlueTooth_Init() 负责。
+	 * 调用顺序必须：BlueTooth_Init() 先于 Debug_Init()。
+	 * 注意：DEBUG_ENABLE=0 时本函数不编译，PA2 不会配置；
+	 *       但那种情况下也没有任何代码往 USART2 发数据，不影响功能。 */
+	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA,ENABLE);
+	GPIO_InitTypeDef GPIO_InitStruct;
+	GPIO_InitStruct.GPIO_Mode  = GPIO_Mode_AF_PP;
+	GPIO_InitStruct.GPIO_Pin   = GPIO_Pin_2;
+	GPIO_InitStruct.GPIO_Speed = GPIO_Speed_50MHz;
+	GPIO_Init(GPIOA,&GPIO_InitStruct);
+
 	DMA_DeInit(DMA1_Channel7);
 	DMA_InitTypeDef DMA_InitStruct;
 	DMA_InitStruct.DMA_BufferSize=0;

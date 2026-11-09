@@ -6,9 +6,11 @@
 #define MOTOR_TIM_CLK           RCC_APB2Periph_TIM1
 #define MOTOR_TIM               TIM1
 
-// PWM参数：72MHz / (PSC+1) / (ARR+1) = 72M/36/100 = 20kHz
-#define MOTOR_PWM_PSC           35
-#define MOTOR_PWM_ARR           99
+// PWM参数：72MHz / (PSC+1) / (ARR+1) = 72M/1/3600 = 20kHz
+// 分辨率 = 1/3600 ≈ 0.028%，比原来的 1/100 精细 36 倍
+// 这样 MOTOR_DUTY_FULLSCALE=1000 的 ‰ 级指令才真正有意义
+#define MOTOR_PWM_PSC           0
+#define MOTOR_PWM_ARR           3599
 
 // 占空比指令满量程（‰），与PID速度环输出量纲一致
 #define MOTOR_DUTY_FULLSCALE    1000

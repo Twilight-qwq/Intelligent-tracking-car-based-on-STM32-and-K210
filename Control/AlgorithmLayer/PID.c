@@ -36,7 +36,7 @@ float PID_V_Calc(pid_velocity_t *pid_v , float actual , float target)
 	pid_v->err = target - actual;
 
 	//2.条件积分：Ki为0时积分无意义；输出已饱和且误差同向时停止累加（抗积分饱和）
-	//  注意：这里判断饱和用的是上一周期的 output，这是标准做法
+	//  注意：这里判断饱和用的是上一周期的 output
 	if(pid_v->Ki != 0.0f)
 	{
 		//is Saturation High/Low是否处于高/低边饱和状态
