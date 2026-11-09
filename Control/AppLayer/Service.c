@@ -23,15 +23,6 @@ static pid_line_t pid_l;
 
 static uint8_t CarRun_State = 0;
 
-/* 启停状态的唯一写入口。
- * 按键是"按一次翻转一次", 蓝牙是"明确要求运行或停车",
- * 两种语义不同, 但最终都落到这里。
- * 以后把按键换成蓝牙, 只需要换掉调用者, 状态机本身不用动。 */
-static void CarRun_Set(uint8_t run)
-{
-    CarRun_State = (run != 0) ? 1 : 0;
-}
-
 static float Speed_Straight   = 40.0f; //直道基速
 static float Speed_SmallAngle = 25.0f; //小角度(直角,钝角)基速
 static float Speed_LargeAngle = 15.0f; //大角度(锐角)基速
@@ -338,4 +329,13 @@ static void Task_Indicate(void)
         Indicator_Tick = 0;
         Indicator_Toggle();
     }
+}
+
+/* 启停状态的唯一写入口。
+ * 按键是"按一次翻转一次", 蓝牙是"明确要求运行或停车",
+ * 两种语义不同, 但最终都落到这里。
+ * 以后把按键换成蓝牙, 只需要换掉调用者, 状态机本身不用动。 */
+static void CarRun_Set(uint8_t run)
+{
+    CarRun_State = (run != 0) ? 1 : 0;
 }

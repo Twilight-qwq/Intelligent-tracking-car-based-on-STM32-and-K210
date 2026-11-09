@@ -67,27 +67,25 @@ static void Debug_AnalyseData(debugdata_t *data,float *channels)
 
 void Debug_log(debugdata_t *data)
 {
-	if ((DMA1_Channel7->CCR & DMA_CCR1_EN) != 0)//dma通道7被打开,工作中
-	{
-		return;//防止新数据覆盖旧数据
-	}
-
 	float channels[DEBUG_FLOAT_NUM];
+	uint8_t i;
+
 	Debug_AnalyseData(data,channels);
 
 	memcpy(debug_tx_buf,channels , sizeof(channels));
 	memcpy(debug_tx_buf+sizeof(channels), vofa_frame_tail, sizeof(vofa_frame_tail));
 
-	DMA_Cmd(DMA1_Channel7,DISABLE);
-	//在修改 DMA 的搬运数量、内存地址等参数时，DMA 通道必须处于关闭状态
-	
-	DMA_ClearFlag(DMA1_FLAG_TC7);
-	//把上一次发送完成标志位清除(TC7),
-
-	DMA_SetCurrDataCounter(DMA1_Channel7,DEBUG_TX_SIZE);
-	//设置要发送数据的长度
-	
-	DMA_Cmd(DMA1_Channel7,ENABLE);
-	//开启转运数据
+	/* 阻塞发送：每发一个字节先等 TXE(发送寄存器空)置位，再塞下一个。
+	 * 24 字节在 115200 下大约 2ms，100ms 才发一次，占用可以忽略。
+	 * 原来用 DMA1_Channel7 的写法实测一个字节都出不去，
+	 * 改成轮询就通了，所以这里不再走 DMA（Debug_Init 里的 DMA 配置保留但不用）。 */
+	for(i = 0; i < DEBUG_TX_SIZE; i++)
+	{
+		while(USART_GetFlagStatus(USART2, USART_FLAG_TXE) == RESET)
+		{
+			/* 空等硬件把上一个字节搬走 */
+		}
+		USART_SendData(USART2, debug_tx_buf[i]);
+	}
 }
 #endif
