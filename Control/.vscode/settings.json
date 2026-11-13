@@ -38,7 +38,7 @@
 // }
 
 {
-    "editor.fontSize": 24,
+    "editor.fontSize": 26,
     "editor.fontFamily": "Consolas, 'Courier New', monospace",
 
     "editor.suggestFontSize": 24,

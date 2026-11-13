@@ -54,9 +54,9 @@ void Service_Init(void)
 	Indicator_Init();
 	k210rcv_Init();
 	SysTimer_Init();
-	PID_VelocityLoop_Init(&pid_v_left,0,0,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//后面再调参
-	PID_VelocityLoop_Init(&pid_v_right,0,0,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//后面再调参
-	PID_LineLoop_Init(&pid_l,0,0,Speed_Straight,-(float)Speed_Straight);//后面再调参
+	PID_VelocityLoop_Init(&pid_v_left,0.0f,0.0f,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//后面再调参
+	PID_VelocityLoop_Init(&pid_v_right,0.0f,0.0f,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//后面再调参
+	PID_LineLoop_Init(&pid_l,0.0f,0.0f,Speed_Straight,-(float)Speed_Straight);//后面再调参
 	//Kp 上限 ≈ 1 / (k × 死区时间)
     WatchDog_Init();
 }
@@ -67,7 +67,9 @@ void ServiceTask_Idle(void)
 	WatchDog_FeedDog();
 }
 
-
+/*
+定时 + 取增量算内环实际速度 + pid算输出 + 设置占空比
+*/
 void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 {
 	if(curr_ms - task_last_5ms < 5) return;
@@ -85,6 +87,9 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 }
 
 
+/*
+定时 + 取视觉数据 + 方向环pid算base和turn
+*/
 void ServiceTask_30ms(uint32_t curr_ms)//外环方向环控制
 {
 	if(curr_ms - task_last_30ms < 30) return;
@@ -97,6 +102,9 @@ void ServiceTask_30ms(uint32_t curr_ms)//外环方向环控制
 }
 
 
+/*
+检查开关状态
+*/
 void ServiceTask_10ms(uint32_t curr_ms)
 {
 	if(curr_ms - task_last_10ms < 10) return;
@@ -105,7 +113,9 @@ void ServiceTask_10ms(uint32_t curr_ms)
     Key_CheckRequest(curr_ms);
 }
 
-
+/*
+定时 + 查开关 + 上位机->蓝牙调参 + 停车处理 + 蓝牙->上位机发数据 + 指示灯
+*/
 void ServiceTask_100ms(uint32_t curr_ms)//开关控制与数据发送
 {
 	
