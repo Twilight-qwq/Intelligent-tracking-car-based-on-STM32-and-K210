@@ -192,7 +192,7 @@ int main(void)
          * 24 字节在 115200 下约 2ms，10ms 发一帧完全够用。 */
         if ((now - last_10ms) >= PERIOD_10MS)
         {
-            debugdata_t dbg;
+            debugdata_t dbg = {0};   /* 先全清零：被注释掉的通道会发 0，不会发乱值 */
             uint8_t     rx_byte;
             BtCommand_t cmd;
 
@@ -214,12 +214,17 @@ int main(void)
                 run_state = (run_state == 0) ? 1 : 0;
             }
 
-            /* 3.发波形 */
+            /* 3.发波形（暂时只发左轮目标 + 左轮实际两个通道） */
             dbg.target_left  = target_speed;    /* ch0 左轮目标 */
             dbg.actual_left  = actual_left;     /* ch1 左轮实际 */
-            dbg.target_right = target_speed;    /* ch2 右轮目标 */
-            dbg.actual_right = actual_right;    /* ch3 右轮实际 */
-            dbg.error        = pwm_out;         /* ch4 软件算出的占空比(‰) —— 判断是不是软件的问题 */
+
+            /* 下面三个通道【暂时注释掉】，帧长仍然是 5 个 float，
+             * 这三个位置固定发 0，VOFA+ 里那三条线会贴在 0，直接隐藏即可。
+             * 要恢复就把下面三行的注释去掉。 */
+            /* dbg.target_right = target_speed; */    /* ch2 右轮目标 */
+            /* dbg.actual_right = actual_right; */    /* ch3 右轮实际 */
+            /* dbg.error        = pwm_out; */         /* ch4 左轮占空比(‰) */
+
             Debug_log(&dbg);
         }
 

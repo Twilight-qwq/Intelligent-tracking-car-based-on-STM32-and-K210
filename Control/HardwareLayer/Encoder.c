@@ -89,7 +89,7 @@ void Encoder_Init(void)
 	TIM_ICInitStruct.TIM_Channel = TIM_Channel_2;
 	TIM_ICInit(ENCODER_LEFT_TIM,&TIM_ICInitStruct);
 	TIM_EncoderInterfaceConfig(ENCODER_LEFT_TIM,TIM_EncoderMode_TI12,
-								TIM_ICPolarity_Rising,TIM_ICPolarity_Rising);//不反相
+								TIM_ICPolarity_Falling,TIM_ICPolarity_Rising);//不反相
 	TIM_SetCounter(ENCODER_LEFT_TIM,0);
 	TIM_Cmd(ENCODER_LEFT_TIM,ENABLE);
 

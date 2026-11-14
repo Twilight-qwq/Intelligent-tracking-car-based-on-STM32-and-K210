@@ -23,37 +23,41 @@ static uint8_t debug_tx_buf[DEBUG_TX_SIZE] = {0};
 static const uint8_t vofa_frame_tail[] = {0x00, 0x00, 0x80, 0x7F};
 //VOFA+ JustFloat固定帧尾
 
+/* ---------- DMA 寄存器位 ---------- */
+#define DMA_CCR_EN      0x0001u     /* 通道使能 */
+#define DMA_CCR_DIR     0x0010u     /* 1 = 内存 -> 外设 */
+#define DMA_CCR_MINC    0x0080u     /* 内存地址递增 */
+/* CCR 基础配置：内存->外设、内存递增、8 位、普通优先级、非循环、非M2M */
+#define DMA7_CCR_BASE   (DMA_CCR_DIR | DMA_CCR_MINC)
+
+/* 通道7的四个标志位在 IFCR/ISR 的 bit24~27 */
+#define DMA_IFCR_CH7    0x0F000000u
+
+/* USART_CR3 的 DMAT 位（第7位）：允许发送寄存器空事件触发 DMA */
+#define USART_CR3_DMAT_BIT  0x0080u
+
 void Debug_Init(void)
 {
-	RCC_AHBPeriphClockCmd(RCC_AHBPeriph_DMA1,ENABLE);
+	/* DMA1 时钟（AHB 总线） */
+	RCC->AHBENR |= RCC_AHBPeriph_DMA1;
 
-	/* USART2 发送脚 PA2 由本文件负责配置；
+	/* USART2 发送脚 PA2 配置成复用推挽；
 	 * 接收脚 PA3 与串口参数由 BlueTooth.c 的 BlueTooth_Init() 负责。
-	 * 调用顺序必须：BlueTooth_Init() 先于 Debug_Init()。
-	 * 注意：DEBUG_ENABLE=0 时本函数不编译，PA2 不会配置；
-	 *       但那种情况下也没有任何代码往 USART2 发数据，不影响功能。 */
-	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA,ENABLE);
-	GPIO_InitTypeDef GPIO_InitStruct;
-	GPIO_InitStruct.GPIO_Mode  = GPIO_Mode_AF_PP;
-	GPIO_InitStruct.GPIO_Pin   = GPIO_Pin_2;
-	GPIO_InitStruct.GPIO_Speed = GPIO_Speed_50MHz;
-	GPIO_Init(GPIOA,&GPIO_InitStruct);
+	 * 调用顺序必须：BlueTooth_Init() 先于 Debug_Init()。 */
+	RCC->APB2ENR |= RCC_APB2Periph_GPIOA;
+	GPIOA->CRL &= ~(0xFu << 8);          /* PA2 四位清零 */
+	GPIOA->CRL |=  (0xBu << 8);          /* 1011 = 复用推挽输出 50MHz */
 
-	DMA_DeInit(DMA1_Channel7);
-	DMA_InitTypeDef DMA_InitStruct;
-	DMA_InitStruct.DMA_BufferSize=0;
-	DMA_InitStruct.DMA_DIR = DMA_DIR_PeripheralDST;
-	DMA_InitStruct.DMA_M2M = DMA_M2M_Disable;
-	DMA_InitStruct.DMA_MemoryBaseAddr = (uint32_t)debug_tx_buf;
-	DMA_InitStruct.DMA_MemoryDataSize = DMA_MemoryDataSize_Byte;
-	DMA_InitStruct.DMA_MemoryInc = DMA_MemoryInc_Enable;
-	DMA_InitStruct.DMA_Mode = DMA_Mode_Normal;
-	DMA_InitStruct.DMA_PeripheralBaseAddr = (uint32_t)&USART2->DR;
-	DMA_InitStruct.DMA_PeripheralDataSize = DMA_PeripheralDataSize_Byte;
-	DMA_InitStruct.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
-	DMA_InitStruct.DMA_Priority = DMA_Priority_Medium;
-	DMA_Init(DMA1_Channel7,&DMA_InitStruct);
-	USART_DMACmd(USART2,USART_DMAReq_Tx,ENABLE);
+	/* ---- 直接把 DMA1 通道7 的寄存器写成我们要的状态 ---- */
+	DMA1_Channel7->CCR  = 0;                       /* 先关通道 */
+	DMA1->IFCR          = DMA_IFCR_CH7;            /* 清通道7所有标志 */
+	DMA1_Channel7->CPAR = (uint32_t)&USART2->DR;   /* 外设地址 */
+	DMA1_Channel7->CMAR = (uint32_t)debug_tx_buf;  /* 内存地址 */
+	DMA1_Channel7->CNDTR = DEBUG_TX_SIZE;          /* 传输个数 */
+	DMA1_Channel7->CCR  = DMA7_CCR_BASE;           /* 配好但 EN=0 */
+
+	/* 打开 USART2 的发送 DMA 请求 */
+	USART2->CR3 |= USART_CR3_DMAT_BIT;
 }
 
 static void Debug_AnalyseData(debugdata_t *data,float *channels)
@@ -65,27 +69,28 @@ static void Debug_AnalyseData(debugdata_t *data,float *channels)
     channels[CH_ERROR] 			= 	data->error;
 }
 
+/* 把一帧数据交给 DMA 发出去，立即返回。
+ * 24 字节在 115200 下约 2ms，这 2ms 由硬件搬，CPU 全程不参与。
+ *
+ * 注意：这里【不做"通道忙就跳过"的判断】，而是每帧都强制把通道复位再装填。
+ * 原因：一旦通道卡在"未完成"状态（EN 一直为 1），如果靠 EN 判断就会永远跳过去，
+ * 表现就是"只发出第一帧，之后再也不动，要按复位才好"。
+ * 每 10ms 发 24 字节只需 2ms，强制复位不会截断上一帧。 */
 void Debug_log(debugdata_t *data)
 {
 	float channels[DEBUG_FLOAT_NUM];
-	uint8_t i;
 
 	Debug_AnalyseData(data,channels);
 
-	memcpy(debug_tx_buf,channels , sizeof(channels));
+	memcpy(debug_tx_buf, channels, sizeof(channels));
 	memcpy(debug_tx_buf+sizeof(channels), vofa_frame_tail, sizeof(vofa_frame_tail));
 
-	/* 阻塞发送：每发一个字节先等 TXE(发送寄存器空)置位，再塞下一个。
-	 * 24 字节在 115200 下大约 2ms，100ms 才发一次，占用可以忽略。
-	 * 原来用 DMA1_Channel7 的写法实测一个字节都出不去，
-	 * 改成轮询就通了，所以这里不再走 DMA（Debug_Init 里的 DMA 配置保留但不用）。 */
-	for(i = 0; i < DEBUG_TX_SIZE; i++)
-	{
-		while(USART_GetFlagStatus(USART2, USART_FLAG_TXE) == RESET)
-		{
-			/* 空等硬件把上一个字节搬走 */
-		}
-		USART_SendData(USART2, debug_tx_buf[i]);
-	}
+	/* 强制复位通道 -> 清标志 -> 设地址和长度 -> 确认DMA请求 -> 重新使能 */
+	DMA1_Channel7->CCR  &= ~DMA_CCR_EN;
+	DMA1->IFCR           = DMA_IFCR_CH7;
+	DMA1_Channel7->CMAR  = (uint32_t)debug_tx_buf;
+	DMA1_Channel7->CNDTR = DEBUG_TX_SIZE;
+	USART2->CR3         |= USART_CR3_DMAT_BIT;
+	DMA1_Channel7->CCR  |= DMA_CCR_EN;
 }
 #endif
