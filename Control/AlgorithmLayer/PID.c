@@ -42,7 +42,7 @@ float PID_V_Calc(pid_velocity_t *pid_v , float actual , float target)
 		//is Saturation High/Low是否处于高/低边饱和状态
 		uint8_t isSatHigh = (pid_v->output >= pid_v->output_max) && (pid_v->err > 0.0f);//超高限&&正误差
 		uint8_t isSatLow = (pid_v->output <= pid_v->output_min) && (pid_v->err < 0.0f);//超低限&&负误差
-		if(isSatHigh==0 && isSatLow==0 && fabsf(pid_v->err)<=20)//都不饱和
+		if(isSatHigh==0 && isSatLow==0 && fabsf(pid_v->err)<=60)//都不饱和（原为20，放宽到60：让误差大时积分也参与）
 		{
 			pid_v->err_integral += pid_v->err;
 		}
