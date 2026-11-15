@@ -8,16 +8,28 @@
 #if DEBUG_ENABLE
 
 
-#define DEBUG_FLOAT_NUM 5
-#define DEBUG_TX_SIZE   (DEBUG_FLOAT_NUM * 4 + 4)  // 结果是 24 字节
+#define DEBUG_FLOAT_NUM 6
+#define DEBUG_TX_SIZE   (DEBUG_FLOAT_NUM * 4 + 4)  // 结果是 28 字节
 
+/* 通道顺序就是 VOFA+ 里从上到下的顺序，改这里必须同步改 VOFA+ 的通道数 */
 typedef enum {
     CH_TARGET_LEFT = 0,  //通道0:左轮目标速度
     CH_ACTUAL_LEFT,      //通道1:左轮实际速度
-    CH_TARGET_RIGHT,     //通道2:右轮目标速度
-    CH_ACTUAL_RIGHT,     //通道3:右轮实际速度
-    CH_ERROR             //通道4:视觉误差
+    CH_PWM_LEFT,         //通道2:左轮占空比(‰)
+    CH_TARGET_RIGHT,     //通道3:右轮目标速度
+    CH_ACTUAL_RIGHT,     //通道4:右轮实际速度
+    CH_PWM_RIGHT         //通道5:右轮占空比(‰)
 }DebugChannel_e;
+
+/* 台架测试用的占空比，由 main.c 调 Debug_SetPwm() 填进来。
+ * 放在这里而不是 debugdata_t 里，是为了不破坏正式固件的数据包结构。 */
+static float debug_pwm[2] = {0.0f, 0.0f};
+
+void Debug_SetPwm(float left, float right)
+{
+	debug_pwm[0] = left;
+	debug_pwm[1] = right;
+}
 
 static uint8_t debug_tx_buf[DEBUG_TX_SIZE] = {0};
 static const uint8_t vofa_frame_tail[] = {0x00, 0x00, 0x80, 0x7F};
@@ -64,18 +76,19 @@ static void Debug_AnalyseData(debugdata_t *data,float *channels)
 {
 	channels[CH_TARGET_LEFT] 	= 	data->target_left;
     channels[CH_ACTUAL_LEFT] 	= 	data->actual_left;
+    channels[CH_PWM_LEFT] 		= 	debug_pwm[0];
     channels[CH_TARGET_RIGHT]	= 	data->target_right;
     channels[CH_ACTUAL_RIGHT] 	= 	data->actual_right;
-    channels[CH_ERROR] 			= 	data->error;
+    channels[CH_PWM_RIGHT] 		= 	debug_pwm[1];
 }
 
 /* 把一帧数据交给 DMA 发出去，立即返回。
- * 24 字节在 115200 下约 2ms，这 2ms 由硬件搬，CPU 全程不参与。
+ * 28 字节在 115200 下约 2.4ms，这 2.4ms 由硬件搬，CPU 全程不参与。
  *
  * 注意：这里【不做"通道忙就跳过"的判断】，而是每帧都强制把通道复位再装填。
  * 原因：一旦通道卡在"未完成"状态（EN 一直为 1），如果靠 EN 判断就会永远跳过去，
  * 表现就是"只发出第一帧，之后再也不动，要按复位才好"。
- * 每 10ms 发 24 字节只需 2ms，强制复位不会截断上一帧。 */
+ * 每 10ms 发 28 字节只需 2.4ms，强制复位不会截断上一帧。 */
 void Debug_log(debugdata_t *data)
 {
 	float channels[DEBUG_FLOAT_NUM];

@@ -2,7 +2,25 @@
 #include <stdlib.h>
 #include <math.h>
 #include "Service.h"
+/*
+大体思路:采用串级pid,外环方向环,内环速度环,先调速度环再调方向环
+    方向环通过计算视觉k210摄像头拍摄到的五条线计算出偏离中心多少像素(err)
+    以及当前状态(state)(直道,直角钝角,锐角,终点线四种),通过pid调节计算差速
+    使左轮加差速,右轮减差速,以达到矫正直道方向(err)以及弯道转弯(state)
+    内环速度环根据外环计算得来的基准速度(各个state有不同的base)以及
+    差速(偏差和state共同作用计算得来)与左右编码器的转速(count/5ms)
+    比较调整实际转速(count/5ms),进而给出左右轮对应应输出的pwm的compare值
+    形成闭环控制
+    (视觉实现详见视觉思路部分)
 
+具体实现功能:
+    采用按钮,蓝牙双控制来控制小车启停
+    支持蓝牙调节参数
+    支持蓝牙调节发送vofa的Justfloat波形
+    根据不同的状态设置指示灯PC13状态
+
+*
+*/
 static void Task_StartStopCmd(void);
 static void Task_CarStop(void);
 static void Task_BtCommand(void);
@@ -23,8 +41,8 @@ static pid_line_t pid_l;
 
 static uint8_t CarRun_State = 0;
 
-static float Speed_Straight   = 40.0f; //直道基速
-static float Speed_SmallAngle = 25.0f; //小角度(直角,钝角)基速
+static float Speed_Straight   = 25.0f; //直道基速(右轮实际上限约30，留20%余量)
+static float Speed_SmallAngle = 20.0f; //小角度(直角,钝角)基速
 static float Speed_LargeAngle = 15.0f; //大角度(锐角)基速
 static float target_left = 0.0f;
 static float target_right = 0.0f;
@@ -54,8 +72,8 @@ void Service_Init(void)
 	Indicator_Init();
 	k210rcv_Init();
 	SysTimer_Init();
-	PID_VelocityLoop_Init(&pid_v_left,0.0f,0.0f,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//后面再调参
-	PID_VelocityLoop_Init(&pid_v_right,0.0f,0.0f,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//后面再调参
+	PID_VelocityLoop_Init(&pid_v_left,100.0f,7.3f,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//台架实测定稿 Kp=100 Ki=7.3
+	PID_VelocityLoop_Init(&pid_v_right,100.0f,7.3f,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//台架实测定稿 Kp=100 Ki=7.3
 	PID_LineLoop_Init(&pid_l,0.0f,0.0f,Speed_Straight,-(float)Speed_Straight);//后面再调参
 	//Kp 上限 ≈ 1 / (k × 死区时间)
     WatchDog_Init();
@@ -75,15 +93,19 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 	if(curr_ms - task_last_5ms < 5) return;
     task_last_5ms = curr_ms; //重置闹钟
 
-	Encoder_Update();
+	Encoder_Update();//更新当前5ms任务的左右编码器增量计数
 	actual_left  = (float)Encoder_GetDeltaLeft();
 	actual_right = (float)Encoder_GetDeltaRight();
+    //读取左右编码器增量作为实际速度(count/5ms)
 
 	if(CarRun_State == 0) return;
+    //关机终止
 
 	float pwm_left = PID_V_Calc(&pid_v_left,actual_left,target_left);
 	float pwm_right = PID_V_Calc(&pid_v_right,actual_right,target_right);
+    //计算左右轮分别需要输出的pwm_compare值,在此等价于千分占空比
 	Motor_SetDuty((int16_t)pwm_left,(int16_t)pwm_right);
+    //设置占空比
 }
 
 
@@ -95,10 +117,13 @@ void ServiceTask_30ms(uint32_t curr_ms)//外环方向环控制
 	if(curr_ms - task_last_30ms < 30) return;
     task_last_30ms = curr_ms;
     if(CarRun_State == 0) return;
+    //关机终止
 
     VisionData_t vis_data;
-    if(Task_FetchVisionData(&vis_data) == 0) return;//没拿到新数据直接结束避免用旧数据算
+    if(Task_FetchVisionData(&vis_data) == 0) return;
+    //没拿到新数据直接结束避免用旧数据算
     Task_CalculateTargetSpeed(&vis_data);
+    //计算方向环输出
 }
 
 
@@ -111,6 +136,7 @@ void ServiceTask_10ms(uint32_t curr_ms)
 
     task_last_10ms = curr_ms;
     Key_CheckRequest(curr_ms);
+    //查看开关是否被按下,即启停状态是否改变
 }
 
 /*
@@ -122,11 +148,16 @@ void ServiceTask_100ms(uint32_t curr_ms)//开关控制与数据发送
     if(curr_ms - task_last_100ms < 100) return;
     task_last_100ms = curr_ms;
 
-    Task_StartStopCmd();//1.按键启停请求
-    Task_BtCommand();//2.蓝牙指令: 启停 + 调参
-    if(CarRun_State == 0) Task_CarStop();//3.停车安全清理(必须放在读取指令之后)
-    Task_SendTelemetry();//4.往VOFA+发送波形数据
-    Task_Indicate();//5.刷新板载灯状态
+    Task_StartStopCmd();
+    //1.按键启停请求
+    Task_BtCommand();
+    //2.蓝牙指令: 启停 + 调参
+    if(CarRun_State == 0) Task_CarStop();
+    //3.停车安全清理(必须放在读取指令之后)
+    Task_SendTelemetry();
+    //4.往VOFA+发送波形数据
+    Task_Indicate();
+    //5.刷新板载灯状态
 }
 
 
@@ -137,6 +168,7 @@ static void Task_StartStopCmd(void)
     if(Key_GetRequest() == 1)
     {
         CarRun_Set(!CarRun_State);
+        //反转小车启停状态
     }
 
     /* 未来在这里直接加上语音的代码，无需改动其他任何地方：
@@ -158,12 +190,13 @@ static void Task_CarStop(void)
     pid_v_right.err = 0;
     pid_l.err_last = 0;
     pid_l.err = 0;
+
 }
 
 
 //蓝牙调参范围限制(参数上限/下限)
-#define LIMIT_V_KP_MAX      10.0f  //内环速度环Kp上限
-#define LIMIT_V_KI_MAX      10.0f  //内环速度环Ki上限
+#define LIMIT_V_KP_MAX      100.0f //内环速度环Kp上限(台架定稿100，留现场微调空间)
+#define LIMIT_V_KI_MAX      20.0f  //内环速度环Ki上限
 #define LIMIT_LINE_KP_MAX   50.0f  //外环方向环Kp上限
 #define LIMIT_LINE_KD_MAX   100.0f //外环方向环Kd上限
 #define LIMIT_SPEED_MAX     100.0f //基础速度上限

@@ -10,15 +10,19 @@
  *   记进 Doc/调参记录表.xlsx
  *   -> 最后写回 Service.c 的 PID_VelocityLoop_Init(...) 和重新编译
  *
- * 【VOFA+ 5 个通道】
- *   ch0  左轮目标速度（正常应该是一条 40 的横线）
- *   ch1  左轮实际速度（调 Kp/Ki 就是让它追上 ch0）
- *   ch2  右轮目标速度
- *   ch3  右轮实际速度
- *   ch4  软件算出的占空比 PWM(‰)  <== 排查"轮子不转"靠这一条
+ * 【VOFA+ 6 个通道】（顺序固定，改这里必须同步改 VOFA+ 的通道数）
+ *   ch0  左轮目标速度  counts/5ms
+ *   ch1  左轮实际速度
+ *   ch2  左轮占空比 PWM(‰)   <== 真正送进电机的那一个数
+ *   ch3  右轮目标速度
+ *   ch4  右轮实际速度
+ *   ch5  右轮占空比 PWM(‰)
  *
- *        ch4 = 0     -> 软件没输出：要么没进运行状态，要么 PID 输出是 0
- *        ch4 有数    -> 软件在输出，轮子不转就是硬件问题（电池没接/驱动没使能）
+ *   怎么用：
+ *     ch0/ch3 是目标，ch1/ch4 是实际 -> 看实际能不能追上目标，这就是 Kp/Ki 好不好
+ *     ch2/ch5 是真正给电机的占空比，范围 ±1000‰
+ *     ch2 = 0 但 ch0 不为 0 -> 软件没输出：没进运行状态，或 PID 输出是 0
+ *     ch2 有数但轮子不转   -> 硬件问题：电池没接 / 驱动没使能 / 线接反
  *
  * 【设备载灯】
  *   运行中 = 常亮      停车 = 慢闪(500ms)
@@ -52,9 +56,11 @@
 
 /* ---------------- 可调默认值 ---------------- */
 //直线目标33是合理的
-#define DEFAULT_TARGET      33.0f   /* 默认目标速度 counts/5ms，和正式固件的直道速度一致 */
-#define DEFAULT_KP          30.0f   /* 速度环 Kp 起始值（先从最大推，保证轮子能转起来） */
-#define DEFAULT_KI          20.0f   /* 速度环 Ki 起始值 */
+#define DEFAULT_TARGET      25.0f   /* 默认目标速度 counts/5ms，和正式固件的直道速度一致 */
+#define DEFAULT_KP          100.0f  /* 速度环 Kp 定稿值：20->25 小阶跃能打满 1000‰；
+                                     * 再往上只放大噪声，不会更快 */
+#define DEFAULT_KI          7.3f    /* 速度环 Ki 定稿值：让积分把最后 1 个 count 追得快，
+                                     * 实测 20->25 小阶跃 25ms 到位 */
 
 /* ---------------- 任务周期(ms) ---------------- */
 #define PERIOD_5MS          5
@@ -77,7 +83,8 @@ static uint8_t  run_state    = 0;                 /* 0=停车 1=运行 */
 static float    target_speed = DEFAULT_TARGET;    /* 目标速度 counts/5ms */
 static float    actual_left  = 0.0f;
 static float    actual_right = 0.0f;
-static float    pwm_out      = 0.0f;              /* 最近一次真正送进电机的占空比（‰） */
+static float    pwm_left_out  = 0.0f;             /* 左轮最近一次送进电机的占空比（‰） */
+static float    pwm_right_out = 0.0f;             /* 右轮最近一次送进电机的占空比（‰） */
 
 static uint32_t last_5ms   = 0;
 static uint32_t last_10ms  = 0;
@@ -98,11 +105,14 @@ static void Bench_Stop(void)
 
 /* 功能：处理一条蓝牙调参指令
  * 参数：cmd 解析出来的指令（指令码 + 数值） */
-/* Kp / Ki 调参上限。
- * 正式固件 Service.c 里是 10（LIMIT_V_KP_MAX / LIMIT_V_KI_MAX），
- * 台架这里放宽到 30，是为了先试出"到底需要多大 Kp 才能把误差压进 20"。
- * 测出来超过 10 的话，正式固件那个上限也得跟着改。 */
-#define BENCH_LIMIT_KP      30.0f
+/* Kp / Ki 调参上限（蓝牙下发的数值超过这个范围会被直接丢掉）。
+ * 正式固件 Service.c 里 LIMIT_V_KP_MAX = 30、LIMIT_V_KI_MAX = 20，
+ * 台架这里把 Kp 放宽到 100，是为了试出"到底多大 Kp 才能让小阶跃变快"。
+ * 注意：Kp 超过 ~100 后，1 个编码器 count 的量化噪声会被放大成 100‰ 的占空比抖动，
+ *       再往上加基本只是让电机嗡嗡叫，不会更快。
+ * 台架上调出来的值，最后要回填 Service.c 里的 PID_VelocityLoop_Init()，
+ * 并且把那边的 LIMIT_V_KP_MAX 一起放开。 */
+#define BENCH_LIMIT_KP      100.0f
 #define BENCH_LIMIT_KI      30.0f
 
 /* 功能：处理一条蓝牙调参指令
@@ -177,20 +187,25 @@ int main(void)
                 float pwm_left  = PID_V_Calc(&pid_left,  actual_left,  target_speed);
                 float pwm_right = PID_V_Calc(&pid_right, actual_right, target_speed);
                 Motor_SetDuty((int16_t)pwm_left, (int16_t)pwm_right);
-                pwm_out = pwm_left;                         /* 记下来给 ch4 看 */
+                pwm_left_out  = pwm_left;                   /* 记下来给 ch2 看 */
+                pwm_right_out = pwm_right;                  /* 记下来给 ch5 看 */
             }
             else
             {
                 Bench_Stop();                               /* 停车时每 5ms 清一次，防止积分堆积 */
-                pwm_out = 0.0f;
+                pwm_left_out  = 0.0f;
+                pwm_right_out = 0.0f;
             }
+
+            /* 两路占空比不走结构体，直接交给 Debug.c（见 Debug_SetPwm 的注释） */
+            Debug_SetPwm(pwm_left_out, pwm_right_out);
         }
 
         /* ===== 10ms：按键扫描 ===== */
         /* ===== 10ms：读蓝牙指令 + 按键 + 发波形 =====
          * 波形原来是 100ms 一帧，但电机从 0 爬到目标只要几十毫秒，
          * 100ms 采一次等于完全看不到过程，只能看到结果。
-         * 24 字节在 115200 下约 2ms，10ms 发一帧完全够用。 */
+         * 28 字节在 115200 下约 2.4ms，10ms 发一帧完全够用。 */
         if ((now - last_10ms) >= PERIOD_10MS)
         {
             debugdata_t dbg = {0};   /* 先全清零：被注释掉的通道会发 0，不会发乱值 */
@@ -215,12 +230,13 @@ int main(void)
                 run_state = (run_state == 0) ? 1 : 0;
             }
 
-            /* 3.发波形（5 个通道全发） */
+            /* 3.发波形（6 个通道全发，一帧 28 字节） */
+            /* ch2 / ch5（两路占空比）不走结构体，由上面的 Debug_SetPwm() 直接给 Debug.c */
             dbg.target_left  = target_speed;    /* ch0 左轮目标 */
             dbg.actual_left  = actual_left;     /* ch1 左轮实际 */
-            dbg.target_right = target_speed;    /* ch2 右轮目标 */
-            dbg.actual_right = actual_right;    /* ch3 右轮实际 */
-            dbg.error        = pwm_out;         /* ch4 左轮占空比(‰)，看是不是打满 1000 */
+            dbg.target_right = target_speed;    /* ch3 右轮目标 */
+            dbg.actual_right = actual_right;    /* ch4 右轮实际 */
+            dbg.error        = 0.0f;            /* 这个通道已经不发了，字段保留兼容正式固件 */
 
             Debug_log(&dbg);
         }
