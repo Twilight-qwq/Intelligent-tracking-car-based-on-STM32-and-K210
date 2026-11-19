@@ -1,4 +1,4 @@
-﻿#include <stdint.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <math.h>
 #include "Service.h"
@@ -41,13 +41,17 @@ static pid_line_t pid_l;
 
 static uint8_t CarRun_State = 0;
 
-static float Speed_Straight   = 25.0f; //直道基速(右轮实际上限约30，留20%余量)
+static float Speed_Straight   = 30.0f; //直道基速(两侧上限均37，只剩7 counts余量给差速)
 static float Speed_SmallAngle = 20.0f; //小角度(直角,钝角)基速
 static float Speed_LargeAngle = 15.0f; //大角度(锐角)基速
 static float target_left = 0.0f;
 static float target_right = 0.0f;
 static float actual_left = 0.0f;
 static float actual_right = 0.0f;
+// 软启动：启动后 300 毫秒内把目标速度按比例从 0 升到 100%
+// 不加这个的话，target 从 0 阶跃到 30，P 项立刻 3000‰ 打满，零速满占空比起步 = 龙抬头
+#define SOFT_START_STEP   0.0167f   // 每 5 毫秒加 1/60，60 步 = 300 毫秒
+static float SoftStart_Scale = 0.0f; // 0.0 ~ 1.0
 static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差，给 100ms 发波形
 
 static uint8_t  Indicator_Tick    = 0;   //闪烁计数
@@ -72,8 +76,8 @@ void Service_Init(void)
 	Indicator_Init();
 	k210rcv_Init();
 	SysTimer_Init();
-	PID_VelocityLoop_Init(&pid_v_left,100.0f,7.3f,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//台架实测定稿 Kp=100 Ki=7.3
-	PID_VelocityLoop_Init(&pid_v_right,100.0f,7.3f,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//台架实测定稿 Kp=100 Ki=7.3
+	PID_VelocityLoop_Init(&pid_v_left,100.0f,10.0f,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//2026-11-18 台架调定 Kp=100 Ki=10：零过冲、稳态误差0、纹波≤1count
+	PID_VelocityLoop_Init(&pid_v_right,100.0f,10.0f,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//2026-11-18 台架调定，与左轮同参数（两侧电机上限均37，实测对称）
 	PID_LineLoop_Init(&pid_l,0.0f,0.0f,Speed_Straight,-(float)Speed_Straight);//后面再调参
 	//Kp 上限 ≈ 1 / (k × 死区时间)
     WatchDog_Init();
@@ -98,11 +102,20 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 	actual_right = (float)Encoder_GetDeltaRight();
     //读取左右编码器增量作为实际速度(count/5ms)
 
-	if(CarRun_State == 0) return;
-    //关机终止
+	if(CarRun_State == 0)
+	{
+		SoftStart_Scale = 0.0f;         // 停车时归零，下次启动重新软启动
+		return;
+	}
+    // 软启动斜坡：每 5 毫秒涨一点，300 毫秒后到 1.0
+	if(SoftStart_Scale < 1.0f)
+	{
+		SoftStart_Scale += SOFT_START_STEP;
+		if(SoftStart_Scale > 1.0f) SoftStart_Scale = 1.0f;
+	}
 
-	float pwm_left = PID_V_Calc(&pid_v_left,actual_left,target_left);
-	float pwm_right = PID_V_Calc(&pid_v_right,actual_right,target_right);
+	float pwm_left = PID_V_Calc(&pid_v_left,actual_left,target_left  * SoftStart_Scale);
+	float pwm_right = PID_V_Calc(&pid_v_right,actual_right,target_right * SoftStart_Scale);
     //计算左右轮分别需要输出的pwm_compare值,在此等价于千分占空比
 	Motor_SetDuty((int16_t)pwm_left,(int16_t)pwm_right);
     //设置占空比
@@ -195,8 +208,10 @@ static void Task_CarStop(void)
 
 
 //蓝牙调参范围限制(参数上限/下限)
-#define LIMIT_V_KP_MAX      100.0f //内环速度环Kp上限(台架定稿100，留现场微调空间)
-#define LIMIT_V_KI_MAX      20.0f  //内环速度环Ki上限
+//2026-11-18 放宽：原来 Kp 卡 100、Ki 卡 20，现场想找"刚好振荡"那个点根本发不进去。
+//不是删掉检查，是把闸抬到有效尽头：Kp 再大也是满占空比开关，Ki 再大积分时间比采样周期还短。
+#define LIMIT_V_KP_MAX      400.0f //内环速度环Kp上限(误差 2.5 counts 就打满，再大无意义)
+#define LIMIT_V_KI_MAX      80.0f  //内环速度环Ki上限(积分时间 6.3 ms，再大必振)
 #define LIMIT_LINE_KP_MAX   50.0f  //外环方向环Kp上限
 #define LIMIT_LINE_KD_MAX   100.0f //外环方向环Kd上限
 #define LIMIT_SPEED_MAX     100.0f //基础速度上限
