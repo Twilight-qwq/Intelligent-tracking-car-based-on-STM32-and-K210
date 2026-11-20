@@ -497,6 +497,13 @@ static void Task_Indicate(void)
     }
     CarRun_PrevState = CarRun_State;
 
+    // 视觉还没就绪(K210 上电约 10 秒):快闪,告诉用户"现在按启动不算数"
+    // 一旦收到第一帧,这个标志变 1,灯自动回到慢闪 = 可以按启动了
+    if (Vision_EverSeen == 0)
+    {
+        Indicator_Fault = 1;
+    }
+
     //只在运行中判超时; 停车后保留故障标志, 方便赛后看出是摄像头出问题
     if (CarRun_State == 1 && (now_ms - Vision_LastTick) > INDICATE_VISION_LOST_MS)
     {
