@@ -146,7 +146,6 @@ static void Task_CarStop(void)
     pid_v_left.err = 0;
     pid_v_right.err_integral = 0;
     pid_v_right.err = 0;
-    pid_l.err_last = 0;
     pid_l.err = 0;
     pid_l.err_diff_last = 0;
     pid_l.err_diff = 0;

@@ -93,7 +93,6 @@ void PID_LineLoop_Init(pid_line_t *pid_l , float Kp , float Kd , float output_ma
 	pid_l->Kp = Kp;
 	pid_l->Kd = Kd;
 	pid_l->err = 0;
-	pid_l->err_last = 0;
 	pid_l->err_diff = 0;
 	pid_l->err_diff_last = 0;
 	pid_l->output = 0;
@@ -117,17 +116,15 @@ void PID_LineLoop_Init(pid_line_t *pid_l , float Kp , float Kd , float output_ma
  */
 float PID_L_Calc(pid_line_t *pid_l , float err , float err_diff)
 {
-	//1.滚动保存偏差；首周期把历史对齐到当前值，避免D项出现Kd*(err-0)的冲击
-	//(人话:防止上电被D项带着起飞,因为lasterr刚上电为0,差分可能很大)
+	//1.滚动保存偏差；首周期把历史对齐到当前值，避免D项出现Kd*(偏差-0)的冲击
+	//(人话:防止上电被D项带着起飞,因为上次值刚上电为0,差分可能很大)
 	if(pid_l->isFirstRun == 1)
 	{
 		pid_l->isFirstRun = 0;
-		pid_l->err_last = err;
 		pid_l->err_diff_last = err_diff;
 	}
 	else
 	{
-		pid_l->err_last = pid_l->err;
 		pid_l->err_diff_last = pid_l->err_diff;
 	}
 	pid_l->err = err;

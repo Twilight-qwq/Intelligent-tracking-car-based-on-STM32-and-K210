@@ -28,7 +28,6 @@ typedef struct
 	float Kp;				//比例项系数
 	float Kd;				//微分项系数
 	float err;				//本次偏差（P项用，已过死区）
-	float err_last;			//上次偏差（P项用）
 	float err_diff;			//本次原始偏差（D项用，没过死区）
 	float err_diff_last;	//上次原始偏差（D项用）
 	float output;			//本次输出
