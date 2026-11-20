@@ -53,6 +53,19 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
 #define CM_PER_COUNT       0.01405f // 1 个编码器计数 = 多少厘米(30档=30counts/5ms=84.3cm/s)
 #define TURN_ARM_SPEED     15.0f    // 等里程期间的直行速度:提前降到转弯基速,别带着最高速进弯
 
+/* 转完90度之后,最多再直行这么久,就得把方向盘交回视觉。
+ * 为什么需要:编码器量的是轮子转了多少,不是车转了多少,中间隔着打滑。
+ * 换个地面(更滑/更涩)同样的 1730 会转出不同角度,所以"转完"只保证大致到位。
+ * 剩下的角度必须让视觉去修 —— 视觉不擅长从0转90度,但很擅长修这±20度。
+ * 如果视觉一直说不"不是弯",以前会一直直行飞出去,这个超时就是防这个的。 */
+#define CORNER_HANDOVER_MS 500      // 转完之后最多直行 500 毫秒
+
+/* 偏差限幅(像素)。
+ * 实测直道 538 帧里 |偏差| 的 p99 是 13、最大 23,所以 20 平时碰不到;
+ * 真正被削掉的是"进弯前"和"刚出弯"那几帧的畸变值。
+ * 不加的话:偏差 50 乘 Kp 0.231 = 差速 11.55,等于一半的转向力,车会被拧歪。 */
+#define LIMIT_LINE_ERR_MAX 20.0f
+
 static uint8_t  Corner_Armed  = 0;    // 1=视觉已经报弯,正在等里程
 static uint8_t  Corner_Active = 0;    // 1=正在按固定差速转弯
 static uint8_t  Corner_Done   = 0;    // 1=这个弯已经转够90度,别再转
@@ -60,6 +73,7 @@ static uint8_t  Corner_Clear  = 0;    // 连续多少帧视觉说"不是弯"
 static float    Corner_ArmDist = 0.0f; // 报弯后已经走的距离(换算厘米)
 static float    Corner_Accum  = 0.0f;  // 累计(左轮-右轮)counts, 就是转过的角度
 static uint32_t Corner_Tick   = 0;     // 本次转弯开始的时刻, 供兜底超时用
+static uint32_t Corner_DoneTick = 0;   // 转完90度的时刻, 供"限时交回视觉"用
 
 static uint8_t  Indicator_Tick    = 0;   //闪烁计数
 static uint8_t  Indicator_Fault   = 0;   //视觉断线锁存, 收到新数据才清除
@@ -116,6 +130,7 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 		{
 			Corner_Active = 0;//转够90度了(或超时兜底),不再按弯道差速走
 			Corner_Done   = 1;//锁存:这个弯已经转过,视觉再喊弯也不转第二次
+			Corner_DoneTick = curr_ms;//记下转完的时刻,供"限时交回视觉"用
 		}
 	}
 	else if(Corner_Armed)
@@ -207,6 +222,7 @@ static void Task_CarStop(void)
     Corner_Clear   = 3;
     Corner_ArmDist = 0.0f;
     Corner_Accum   = 0.0f;
+    Corner_DoneTick = 0;
 }
 
 
@@ -319,9 +335,12 @@ static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
 {
     uint8_t state = vis_data->car_state;
 
-    // 原始偏差：D项要用它，不能让它经过死区（死区会把 4 变成 0，凭空造台阶）
-    float raw_error = (float)vis_data->error;
-    last_vision_error = raw_error;//波形发原始偏差，方便看视觉本身跳不跳
+    float vision_error = (float)vis_data->error;
+    last_vision_error = vision_error;//波形发原始偏差，方便看视觉本身跳不跳
+
+    float raw_error = vision_error;//喂给PD的那一份：先限幅
+    if (raw_error >  LIMIT_LINE_ERR_MAX) raw_error =  LIMIT_LINE_ERR_MAX;
+    if (raw_error < -LIMIT_LINE_ERR_MAX) raw_error = -LIMIT_LINE_ERR_MAX;
 
     /* ---------- 弯道转向状态机（三段） ----------
      * ① 视觉报弯：它看得比车走得远，这时候车离弯道还有一段，先直行过去
@@ -331,14 +350,23 @@ static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
     if (state == 2)
     {
         Corner_Clear = 0;//视觉说这里就是弯,清掉"已经离开"的计数
-        if (Corner_Done)//这个弯已经转够了:直行,等视觉离开弯道
+        if (Corner_Done)//这个弯已经转够了
         {
             Corner_Armed  = 0;
             Corner_Active = 0;
-            //注意:这里不能落到下面的PD里。状态2期间视觉发的是固定50,喂进PD会算出差速11.55,车会接着转。
-            target_left  = Speed_Straight;
-            target_right = Speed_Straight;
-            return;
+            if ((Service_Clock() - Corner_DoneTick) > CORNER_HANDOVER_MS)
+            {
+                // 直行够久了,强制交回视觉:不 return,落到下面的PD去。
+                // 编码器只管"大致转到90度",剩下的航向让视觉修(偏差已限幅±20,
+                // 最多算出差速 0.231*20=4.6,不会把车拧歪)。
+            }
+            else
+            {
+                // 刚转完这一小段先直行,让相机从"还在看弯道"缓过来
+                target_left  = Speed_Straight;
+                target_right = Speed_Straight;
+                return;
+            }
         }
         else if (Corner_Active)//里程到了:固定差速转,不看视觉偏差
         {
