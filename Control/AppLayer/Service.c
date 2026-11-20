@@ -214,6 +214,12 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 			Corner_Done   = 1;//锁存:这个弯已经转过,视觉再喊弯也不转第二次
 			Corner_DoneTick = curr_ms;//记下转完的时刻,供"限时交回视觉"用
 			Corner_Cool   = 0.0f;//冷却从这一刻开始重新算
+			// 立刻改成直行目标。
+			// 为什么:目标速度只有 30ms 任务会改,而那要等下一帧视觉(最多 27.7 毫秒)。
+			// 如果视觉正好在这一刻断掉,目标会一直停在转弯差速上,直到 330 毫秒超时停车 ——
+			// 这段时间车会再转将近 90 度(离线仿真里验证过)。所以这里直接把目标拨回直行。
+			target_left  = Speed_Straight;
+			target_right = Speed_Straight;
 		}
 	}
 	else if(Corner_Armed)
