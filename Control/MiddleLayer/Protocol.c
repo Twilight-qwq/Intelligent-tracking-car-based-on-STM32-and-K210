@@ -30,7 +30,7 @@ void Protocol_VisionParse(uint8_t data)
     switch(current_state)
     {
         case V_WAIT_HEADER:
-            if(data == FRAME_HEADER) current_state = V_RECV_ERROR;
+            if(data == FRAME_HEADER) current_state = V_RECV_ERROR; // 【修改点】
             break;
             
         case V_RECV_ERROR:

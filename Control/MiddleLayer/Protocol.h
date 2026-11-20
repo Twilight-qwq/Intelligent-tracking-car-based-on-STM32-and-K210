@@ -7,11 +7,10 @@
 
 
 
-typedef struct VisionData_t//储存视觉误差和路况状态
-{
+typedef struct {
     int8_t  error;           // 视觉误差
     uint8_t car_state;       // 路况状态
-}VisionData_t;
+} VisionData_t;
 
 void Protocol_VisionParse(uint8_t data);
 uint8_t Protocol_GetVision(VisionData_t *out_data);
@@ -38,11 +37,10 @@ uint8_t Protocol_GetVision(VisionData_t *out_data);
 #define BT_CMD_SET_RUN_STATE    0x0A  // 1.0=启动 0.0=停车 (与按键共用 CarRun_State)
 
 
-typedef struct BtCommand_t//储存指令类型和对应参数数值
-{
+typedef struct {
     uint8_t cmd_type;   // 指令类型 (比如 0x01 代表改左Kp, 0x02 代表改左Kd)
     float   param_val;  // 参数数值 (比如 1.5)
-}BtCommand_t;
+} BtCommand_t;
 
 uint8_t Protocol_BtParse(uint8_t rx_byte, BtCommand_t *out_cmd);
 #endif
