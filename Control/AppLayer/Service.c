@@ -92,6 +92,28 @@ static uint32_t Vision_LastTick   = 0;   //最后一次收到视觉数据的时�
 static uint8_t  CarRun_PrevState  = 0;   //上一次的运行状态, 用于捕捉启动瞬间
 static uint8_t  Vision_EverSeen   = 0;   //上电后有没有收到过视觉数据(没就绪前不许启动)
 
+/* ===== 台架：编码器里程标定（2026-11-20 深夜加） =====
+ * 目的：实测「1 个编码器计数 = 多少厘米」。
+ *       现在代码里的 CM_PER_COUNT = 0.01405 是从"30档=84.3厘米/秒"反推的，
+ *       而 84.3 本身是估算，从来没直接量过。这个数一错，等里程和转角累计两个都跟着错。
+ * 用法：按住开关不放 → 上电 → 灯常亮 = 进入标定模式。
+ *       电机不驱动（可以随便推），用手把车推过一段量好的距离（比如 100 厘米）。
+ *       停手 1 秒后数值锁定。
+ *       看 VOFA 五个通道：
+ *         ch1 = 左轮累计 counts
+ *         ch2 = 右轮累计 counts
+ *         ch3 = 里程（按当前 CM_PER_COUNT 换算的厘米）  ← 和卷尺量的比
+ *         ch4 = 1 表示数值已锁定
+ *         ch5 = 0
+ *       真实比例 = 0.01405 × 卷尺厘米 ÷ ch3 显示的厘米。
+ * 退出：断电，不要按住开关再上电即可。 */
+static uint8_t  Calib_Mode   = 0;      // 1=标定模式
+static uint8_t  Calib_Frozen = 0;      // 1=停手1秒后锁定了数值
+static float    Calib_Left   = 0.0f;   // 左轮累计 counts
+static float    Calib_Right  = 0.0f;   // 右轮累计 counts
+static float    Calib_Cm     = 0.0f;   // 累计里程(换算厘米)
+static uint32_t Calib_IdleMs = 0;      // 已经多少毫秒没有新计数
+
 uint32_t Service_Clock(void)
 {
 	return SysTimer_GetTick();
@@ -103,6 +125,12 @@ void Service_Init(void)
 	Encoder_Init();
 	Motor_Init();
 	Key_Init();//后面删掉换成语音模块
+	// 台架标定模式:上电瞬间按住开关不放就进标定
+	// (按键接在 PA0, 上拉输入, 按下 = 低电平; 具体引脚见 Key.c)
+	if (GPIO_ReadInputDataBit(GPIOA, GPIO_Pin_0) == 0)
+	{
+		Calib_Mode = 1;
+	}
 	Voice_Init();
 	BlueTooth_Init();
 	Debug_Init();
@@ -131,6 +159,29 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 	Encoder_Update();
 	actual_left  = (float)Encoder_GetDeltaLeft();
 	actual_right = (float)Encoder_GetDeltaRight();
+
+	// ---- 台架:编码器里程标定 ----
+	if(Calib_Mode)
+	{
+		if((actual_left > 0.5f) || (actual_left < -0.5f) ||
+		   (actual_right > 0.5f) || (actual_right < -0.5f))
+		{
+			Calib_IdleMs = 0;
+			if(Calib_Frozen == 0)
+			{
+				Calib_Left  += actual_left;
+				Calib_Right += actual_right;
+				Calib_Cm    += ((actual_left + actual_right) * 0.5f) * CM_PER_COUNT;
+			}
+		}
+		else
+		{
+			Calib_IdleMs += 5;
+			if(Calib_IdleMs > 1000) Calib_Frozen = 1;//停手 1 秒 -> 锁定, 波形变成一条平线, 好读数
+		}
+		Motor_SetDuty(0,0);//标定期间不驱动电机, 可以随便推
+		return;
+	}
 
 	if(CarRun_State == 0) return;
 
@@ -176,6 +227,8 @@ void ServiceTask_30ms(uint32_t curr_ms)//外环方向环控制
 	if(curr_ms - task_last_30ms < 30) return;
     task_last_30ms = curr_ms;
 
+    if(Calib_Mode) return;//台架标定模式不需要视觉
+
     // 停车时也要读视觉数据。
     // 为什么:启动按键要等「收到过至少一帧视觉」才允许启动,而那个标志是在
     // Task_FetchVisionData 里置的。如果这里先 return,停车状态下永远读不到数据,
@@ -203,6 +256,13 @@ void ServiceTask_100ms(uint32_t curr_ms)//开关控制与数据发送
 	
     if(curr_ms - task_last_100ms < 100) return;
     task_last_100ms = curr_ms;
+
+    if(Calib_Mode)//台架标定模式:只管发波形,不处理启停、不做停车清理
+    {
+        Task_SendTelemetry();
+        Task_Indicate();
+        return;
+    }
 
     Task_StartStopCmd();//1.按键启停请求
     Task_BtCommand();//2.蓝牙指令: 启停 + 调参
@@ -333,11 +393,23 @@ static void Task_BtCommand(void)
 static void Task_SendTelemetry(void)
 {
     debugdata_t data;
-    data.target_left  = target_left;
-    data.actual_left  = actual_left;
-    data.target_right = target_right;
-    data.actual_right = actual_right;
-    data.error        = last_vision_error; // 使用刚才记录的误差
+
+    if(Calib_Mode)//台架标定:五个通道换成"累计值", 方便读数
+    {
+        data.target_left  = Calib_Left;              // ch1 左轮累计 counts
+        data.actual_left  = Calib_Right;             // ch2 右轮累计 counts
+        data.target_right = Calib_Cm;                // ch3 里程(换算厘米) <- 和卷尺比这个
+        data.actual_right = Calib_Frozen ? 1.0f : 0.0f;// ch4 =1 表示数值已锁定
+        data.error        = 0.0f;                    // ch5 保留
+    }
+    else
+    {
+        data.target_left  = target_left;
+        data.actual_left  = actual_left;
+        data.target_right = target_right;
+        data.actual_right = actual_right;
+        data.error        = last_vision_error; // 使用刚才记录的误差
+    }
     Debug_log(&data);
 }
 
@@ -489,6 +561,14 @@ static void Task_Indicate(void)
 {
     uint32_t now_ms = Service_Clock();
     uint8_t  blink_ticks;
+
+    // 台架标定模式:常亮,表示"已经进了标定模式"
+    if (Calib_Mode)
+    {
+        Indicator_Tick = 0;
+        Indicator_TurnOn();
+        return;
+    }
 
     //启动瞬间重新计时, 避免上电期间的空窗被判成断线
     if (CarRun_State == 1 && CarRun_PrevState == 0)
