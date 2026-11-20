@@ -562,11 +562,22 @@ static void Task_Indicate(void)
     uint32_t now_ms = Service_Clock();
     uint8_t  blink_ticks;
 
-    // 台架标定模式:常亮,表示"已经进了标定模式"
+    // 台架标定模式:双闪(闪两下、停一下,周期 1.2 秒)。
+    // 为什么不用常亮:2026-11-20 夜发现这块主控板的 LED 极性和代码里写的相反
+    // (代码里 Indicator_TurnOn 是输出低电平,这块板低电平是灭),所以"常亮"会显示成常暗,
+    // 而且常暗又跟"运行中视觉正常"撞在一起。闪烁不受极性影响,所以改用闪烁区分。
     if (Calib_Mode)
     {
-        Indicator_Tick = 0;
-        Indicator_TurnOn();
+        Indicator_Tick++;
+        if (Indicator_Tick >= 12) Indicator_Tick = 0;
+        if (Indicator_Tick < 2 || (Indicator_Tick >= 4 && Indicator_Tick < 6))
+        {
+            Indicator_TurnOn();
+        }
+        else
+        {
+            Indicator_TurnOff();
+        }
         return;
     }
 
