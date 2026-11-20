@@ -40,13 +40,15 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
  *       转 90° 需要累计 = 1.5708 * 轮距 / 0.01405 = 111.8 * 轮距
  *       轮距 11 厘米 → 111.8 * 11 = 1230 counts
  */
-#define TURN_DIFF_TARGET   1230.0f  // 转 90 度需要累计的(左-右)counts
+#define TURN_DIFF_TARGET   1730.0f  // 转 90 度需要累计的(左-右)counts
+                                    // 标定记录:理论值 111.8*11=1230,实测只转出 64 度
+                                    //          按比例 1230*90/64 = 1730(内轮被拖着走,编码器多算了)
 #define TURN_SPEED         15.0f    // 转弯时基速(= Speed_LargeAngle)
 #define TURN_VALUE         11.55f   // 转弯时差速(= Kp 0.231 * 视觉固定值 50)
 #define TURN_TIMEOUT_MS    800      // 兜底:0.8秒还没转够就强制结束(卡住了也不至于一直转)
 #define TURN_ARM_CM        45.0f    // 视觉报弯后,还要再直走这么多厘米才真的开始转
 #define CM_PER_COUNT       0.01405f // 1 个编码器计数 = 多少厘米(30档=30counts/5ms=84.3cm/s)
-#define TURN_ARM_SPEED     25.0f    // 等里程期间的直行速度
+#define TURN_ARM_SPEED     15.0f    // 等里程期间的直行速度:提前降到转弯基速,别带着最高速进弯
 
 static uint8_t  Corner_Armed  = 0;    // 1=视觉已经报弯,正在等里程
 static uint8_t  Corner_Active = 0;    // 1=正在按固定差速转弯
