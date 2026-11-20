@@ -46,10 +46,9 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
 #define TURN_SPEED         15.0f    // 转弯时基速(= Speed_LargeAngle)
 #define TURN_VALUE         11.55f   // 转弯时差速(= Kp 0.231 * 视觉固定值 50)
 #define TURN_TIMEOUT_MS    800      // 兜底:0.8秒还没转够就强制结束(卡住了也不至于一直转)
-#define TURN_ARM_CM        30.0f    // 视觉报弯后,还要再直走这么多"换算厘米"才真的开始转
+#define TURN_ARM_CM        20.0f    // 视觉报弯后,还要再直走这么多"换算厘米"才真的开始转
                                     // 标定记录:填45时实测只走了约28厘米(比例0.62)
-                                    // 2026-11-20 下午判弯改成只看最近3行,报弯点从59厘米挪到约35厘米,
-                                    // 所以补偿量从72减到30(约等于实际19厘米)
+                                    // 2026-11-20 夜里实车:填30时转弯略晚(压线后能自己纠回来),改20试
 #define CM_PER_COUNT       0.01405f // 1 个编码器计数 = 多少厘米(30档=30counts/5ms=84.3cm/s)
 #define TURN_ARM_SPEED     15.0f    // 等里程期间的直行速度:提前降到转弯基速,别带着最高速进弯
 
@@ -331,10 +330,20 @@ static void Task_SendTelemetry(void)
 static uint8_t Task_FetchVisionData(VisionData_t *vis_data)
 {
     static uint8_t lostdata_time = 0; 
+    static uint8_t Vision_EverSeen = 0; //上电以后有没有收到过任意一帧视觉数据
     
     if(Protocol_GetVision(vis_data) == 0)//没有新数据
     {
         lostdata_time++;
+        // 2026-11-20 夜里:上电后还没收到过任何一帧时,不要因为超时就把车停掉。
+        // 原因:日志里第一行是「已跑 9.9 秒」—— K210 从上电到开始发数据要 10 秒左右。
+        // 这 10 秒里按启动键,车会「启动 → 0.33 秒后被超时停掉」,
+        // 表现就是「要按好几次才能启动」。
+        if(Vision_EverSeen == 0)
+        {
+            lostdata_time = 0;
+            return 0;
+        }
         if(lostdata_time > 10)//11次*30ms=330ms。原来>3(120ms),视觉一帧就100ms,余量不够会误停(2026-11-20改)
         {
             CarRun_State = 0;//防止摄像头出问题了小车还在跑
@@ -343,6 +352,8 @@ static uint8_t Task_FetchVisionData(VisionData_t *vis_data)
         }
         return 0; // 没拿到
     }
+    
+    Vision_EverSeen = 1;//收到过数据了,以后超时就真的要停
     
     lostdata_time = 0;//收到数据,清空超时计数
     Vision_LastTick  = Service_Clock();//记录视觉存活时刻, 供板载灯判断断线
