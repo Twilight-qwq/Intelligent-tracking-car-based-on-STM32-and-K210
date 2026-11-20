@@ -1,4 +1,4 @@
-﻿#ifndef __PID_H
+#ifndef __PID_H
 #define __PID_H
 #include <stdint.h>
 
@@ -27,8 +27,10 @@ typedef struct
 {
 	float Kp;				//比例项系数
 	float Kd;				//微分项系数
-	float err;				//本次偏差
-	float err_last;			//上次偏差
+	float err;				//本次偏差（P项用，已过死区）
+	float err_last;			//上次偏差（P项用）
+	float err_diff;			//本次原始偏差（D项用，没过死区）
+	float err_diff_last;	//上次原始偏差（D项用）
 	float output;			//本次输出
 	float output_max;		//输出上限
 	float output_min;		//输出下限
@@ -36,6 +38,6 @@ typedef struct
 }pid_line_t;
 
 void PID_LineLoop_Init(pid_line_t *pid_l , float Kp , float Kd , float output_max , float output_min);
-float PID_L_Calc(pid_line_t *pid_l , float err);
+float PID_L_Calc(pid_line_t *pid_l , float err , float err_diff);
 
 #endif

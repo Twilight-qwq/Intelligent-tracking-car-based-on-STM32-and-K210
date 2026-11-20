@@ -148,12 +148,14 @@ static void Task_CarStop(void)
     pid_v_right.err = 0;
     pid_l.err_last = 0;
     pid_l.err = 0;
+    pid_l.err_diff_last = 0;
+    pid_l.err_diff = 0;
 }
 
 
 //蓝牙调参范围限制(参数上限/下限)
-#define LIMIT_V_KP_MAX      10.0f  //内环速度环Kp上限
-#define LIMIT_V_KI_MAX      10.0f  //内环速度环Ki上限
+#define LIMIT_V_KP_MAX      400.0f //内环速度环Kp上限(误差 2.5 counts 就打满，再大无意义)
+#define LIMIT_V_KI_MAX      80.0f  //内环速度环Ki上限(积分时间 6.3 ms，再大必振)
 #define LIMIT_LINE_KP_MAX   50.0f  //外环方向环Kp上限
 #define LIMIT_LINE_KD_MAX   100.0f //外环方向环Kd上限
 #define LIMIT_SPEED_MAX     100.0f //基础速度上限
@@ -258,16 +260,17 @@ static uint8_t Task_FetchVisionData(VisionData_t *vis_data)
 // 6. 计算方向环与控制输出(30ms)
 static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
 {
-    // 更新用于Debug发波形的误差
-    float error = (float)vis_data->error;
-    last_vision_error = error;
+    // 原始偏差：D项要用它，不能让它经过死区（死区会把 4 变成 0，凭空造台阶）
+    float raw_error = (float)vis_data->error;
+    last_vision_error = raw_error;//波形发原始偏差，方便看视觉本身跳不跳
 
+    float error = raw_error;//P项用这份：±3 以内算 0，防中心附近细微抖动
     if(fabsf(error)<=3)
     {
-        error = 0.0f;//忽略细微抖动
+        error = 0.0f;
     }
 
-    float turn = PID_L_Calc(&pid_l,error);//差速大小
+    float turn = PID_L_Calc(&pid_l,error,raw_error);//差速大小(P用error，D用raw_error)
     float base_speed = Speed_Straight;
 
     switch (vis_data->car_state)

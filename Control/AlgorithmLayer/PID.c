@@ -1,4 +1,4 @@
-﻿#include <stdint.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <math.h>
 #include "PID.h"
@@ -94,36 +94,56 @@ void PID_LineLoop_Init(pid_line_t *pid_l , float Kp , float Kd , float output_ma
 	pid_l->Kd = Kd;
 	pid_l->err = 0;
 	pid_l->err_last = 0;
+	pid_l->err_diff = 0;
+	pid_l->err_diff_last = 0;
 	pid_l->output = 0;
 	pid_l->output_max = output_max;
 	pid_l->output_min = output_min;
 	pid_l->isFirstRun = 1;
 }
 
+/* 微分限幅（像素/帧）。
+ * 实测直道 538 帧里，相邻两帧偏差变化的中位是 1px、p90 是 3px，
+ * 但偶尔会单帧跳 10~23px（视觉被褶皱/反光骗了）。
+ * 取 8px ≈ 正常值的 2.7 倍：正常行驶碰不到，只有真跳变才会被削平。
+ * 为什么要削：一次 23px 的跳变乘 Kd 会变成一记重打方向，那不是车在动，是眼睛在抖。 */
+#define LIMIT_LINE_DIFF_MAX   8.0f
+
 /* 功能：循迹环PD计算
  * 参数1：循迹环结构体指针
- * 参数2：本周期偏差（mm，黑线相对车体中心，右偏为正，左偏为负）
+ * 参数2：本周期偏差（给P项用，外面已经做过±3死区）
+ * 参数3：本周期原始偏差（给D项用，没过死区）
  * 返回：本周期左右轮差速量（counts/周期），叠加到基础速度上
  */
-float PID_L_Calc(pid_line_t *pid_l , float err)
+float PID_L_Calc(pid_line_t *pid_l , float err , float err_diff)
 {
-	//1.滚动保存偏差；首周期把err_last对齐到当前偏差，避免D项出现Kd*(err-0)的冲击
+	//1.滚动保存偏差；首周期把历史对齐到当前值，避免D项出现Kd*(err-0)的冲击
 	//(人话:防止上电被D项带着起飞,因为lasterr刚上电为0,差分可能很大)
 	if(pid_l->isFirstRun == 1)
 	{
 		pid_l->isFirstRun = 0;
 		pid_l->err_last = err;
+		pid_l->err_diff_last = err_diff;
 	}
 	else
 	{
 		pid_l->err_last = pid_l->err;
+		pid_l->err_diff_last = pid_l->err_diff;
 	}
 	pid_l->err = err;
+	pid_l->err_diff = err_diff;
 
-	//2.PD控制输出：P项跟随偏差，D项抑制偏差变化速度
-	pid_l->output = (pid_l->Kp)*(pid_l->err) + (pid_l->Kd)*(pid_l->err - pid_l->err_last);
+	//2.微分项：用原始偏差算变化量，并限幅
+	//  用原始偏差而不是死区后的偏差: 偏差从4掉到3时,死区会把它变成4→0,
+	//  凭空造出一个4px台阶,D项把台阶当成"变化极快",每次过中心都踢一下
+	float diff = pid_l->err_diff - pid_l->err_diff_last;
+	if(diff >  LIMIT_LINE_DIFF_MAX) diff =  LIMIT_LINE_DIFF_MAX;
+	if(diff < -LIMIT_LINE_DIFF_MAX) diff = -LIMIT_LINE_DIFF_MAX;
 
-	//3.输出限幅
+	//3.PD控制输出：P项跟随偏差，D项抑制偏差变化速度
+	pid_l->output = (pid_l->Kp)*(pid_l->err) + (pid_l->Kd)*diff;
+
+	//4.输出限幅
 	if(pid_l->output > pid_l->output_max)
 	{
 		pid_l->output = pid_l->output_max;
