@@ -90,6 +90,7 @@ static uint8_t  Indicator_Tick    = 0;   //闪烁计数
 static uint8_t  Indicator_Fault   = 0;   //视觉断线锁存, 收到新数据才清除
 static uint32_t Vision_LastTick   = 0;   //最后一次收到视觉数据的时刻
 static uint8_t  CarRun_PrevState  = 0;   //上一次的运行状态, 用于捕捉启动瞬间
+static uint8_t  Vision_EverSeen   = 0;   //上电后有没有收到过视觉数据(没就绪前不许启动)
 
 uint32_t Service_Clock(void)
 {
@@ -211,6 +212,14 @@ static void Task_StartStopCmd(void)
     // 目前：处理物理按键
     if(Key_GetRequest() == 1)
     {
+        // 视觉还没起来(K210 上电要 10 秒左右)时,按启动直接忽略 —— 不启动。
+        // 为什么不"先记着想启动、等视觉一到就走":那样按下启动后走开,
+        // 10 秒后车会突然窜出去,容易撞到手。
+        // 正确用法:上电 → 摆车/检查(这 10 秒正好干这些) → 再按启动。
+        if(Vision_EverSeen == 0)
+        {
+            return;
+        }
         CarRun_Set(!CarRun_State);
     }
 
@@ -330,7 +339,6 @@ static void Task_SendTelemetry(void)
 static uint8_t Task_FetchVisionData(VisionData_t *vis_data)
 {
     static uint8_t lostdata_time = 0; 
-    static uint8_t Vision_EverSeen = 0; //上电以后有没有收到过任意一帧视觉数据
     
     if(Protocol_GetVision(vis_data) == 0)//没有新数据
     {
