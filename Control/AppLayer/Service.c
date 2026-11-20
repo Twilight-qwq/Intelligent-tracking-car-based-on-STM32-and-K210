@@ -60,6 +60,15 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
  * 如果视觉一直说不"不是弯",以前会一直直行飞出去,这个超时就是防这个的。 */
 #define CORNER_HANDOVER_MS 500      // 转完之后最多直行 500 毫秒
 
+/* 弯道冷却（厘米）。
+ * 为什么需要:实测推车时,同一个弯里视觉会"报弯 → 松开 → 又报弯"(14.5秒触发,
+ * 18.2秒松开,23.3秒又触发)。STM32 转完一个弯之后就解锁了,于是会转第二次。
+ * 加一段"转过之后先走够这么远才允许下一个弯"的距离锁。
+ * 取 70 厘米的依据:用户实测赛道上最近的两个弯之间也隔着 1 米以上,
+ * 所以 70 厘米不会漏掉任何真弯,同时留了 30 厘米余量。
+ * 注意:转完那 500 毫秒直行的约 42 厘米也计在里面,所以交回视觉后还要再走约 28 厘米。 */
+#define CORNER_COOLDOWN_CM 70.0f
+
 /* 偏差限幅(像素)。
  * 实测直道 538 帧里 |偏差| 的 p99 是 13、最大 23,所以 20 平时碰不到;
  * 真正被削掉的是"进弯前"和"刚出弯"那几帧的畸变值。
@@ -74,6 +83,7 @@ static float    Corner_ArmDist = 0.0f; // 报弯后已经走的距离(换算厘�
 static float    Corner_Accum  = 0.0f;  // 累计(左轮-右轮)counts, 就是转过的角度
 static uint32_t Corner_Tick   = 0;     // 本次转弯开始的时刻, 供兜底超时用
 static uint32_t Corner_DoneTick = 0;   // 转完90度的时刻, 供"限时交回视觉"用
+static float    Corner_Cool     = 99999.0f; // 冷却已走的距离(厘米), 大数=不冷却
 
 static uint8_t  Indicator_Tick    = 0;   //闪烁计数
 static uint8_t  Indicator_Fault   = 0;   //视觉断线锁存, 收到新数据才清除
@@ -122,6 +132,12 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 
 	if(CarRun_State == 0) return;
 
+	//弯道冷却:转完一个弯之后要再走够 CORNER_COOLDOWN_CM 才允许下一个弯
+	if(Corner_Cool < CORNER_COOLDOWN_CM)
+	{
+		Corner_Cool += ((actual_left + actual_right) * 0.5f) * CM_PER_COUNT;
+	}
+
 	//弯道转向:每5毫秒把(左轮-右轮)的增量加进累计值,加满目标角度就停
 	if(Corner_Active)
 	{
@@ -131,6 +147,7 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 			Corner_Active = 0;//转够90度了(或超时兜底),不再按弯道差速走
 			Corner_Done   = 1;//锁存:这个弯已经转过,视觉再喊弯也不转第二次
 			Corner_DoneTick = curr_ms;//记下转完的时刻,供"限时交回视觉"用
+			Corner_Cool   = 0.0f;//冷却从这一刻开始重新算
 		}
 	}
 	else if(Corner_Armed)
@@ -223,6 +240,7 @@ static void Task_CarStop(void)
     Corner_ArmDist = 0.0f;
     Corner_Accum   = 0.0f;
     Corner_DoneTick = 0;
+    Corner_Cool   = 99999.0f;//停车复位:下次启动第一个弯不该被冷却挡住
 }
 
 
@@ -374,8 +392,16 @@ static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
             target_right = TURN_SPEED - TURN_VALUE;
             return;
         }
-        else //刚报弯:直着走过去。这段不能看视觉,因为状态2时视觉发的是固定50,看了就会提前转
+        else //刚报弯:先看是不是还在上一个弯的冷却期里
         {
+            if (Corner_Cool < CORNER_COOLDOWN_CM)
+            {
+                // 冷却中:上一个弯刚转完,车还没走够距离。
+                // 这时候视觉再喊弯,多半是同一个弯还没从画面里退出去 —— 当直道走,不转。
+                target_left  = Speed_Straight;
+                target_right = Speed_Straight;
+                return;
+            }
             Corner_Armed = 1;
             target_left  = TURN_ARM_SPEED;
             target_right = TURN_ARM_SPEED;
