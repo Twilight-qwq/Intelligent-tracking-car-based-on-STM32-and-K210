@@ -99,7 +99,7 @@ void Service_Init(void)
 	SysTimer_Init();
 	PID_VelocityLoop_Init(&pid_v_left,100.0f,10.0f,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//台架调定 Kp=100 Ki=10
 	PID_VelocityLoop_Init(&pid_v_right,100.0f,10.0f,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//台架调定，左右同参数
-	PID_LineLoop_Init(&pid_l,0.231f,0.53f,Speed_Straight,-(float)Speed_Straight);//方向环 Kp=0.1 Kd=0（2026-11-20 实车：0.5 画龙，0.1 刚好）
+	PID_LineLoop_Init(&pid_l,0.231f,0.53f,Speed_Straight,-(float)Speed_Straight);//方向环 Kp=0.231 Kd=0.53（2026-11-20 实车调定：0.5 画龙、0.1 偏钝，0.231/0.53 直道可用）
 	//Kp 上限 ≈ 1 / (k × 死区时间)
     WatchDog_Init();
 }
