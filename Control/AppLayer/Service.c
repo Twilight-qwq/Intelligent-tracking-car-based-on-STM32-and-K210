@@ -166,18 +166,23 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 		if((actual_left > 0.5f) || (actual_left < -0.5f) ||
 		   (actual_right > 0.5f) || (actual_right < -0.5f))
 		{
+			// 有动作:解锁并继续累加
+			// (踩过的坑:以前"静止1秒就锁定",而一上电摆车时本来就是静止的,
+			//  于是程序上电1秒后就把自己锁死了,之后怎么推都是 0)
 			Calib_IdleMs = 0;
-			if(Calib_Frozen == 0)
-			{
-				Calib_Left  += actual_left;
-				Calib_Right += actual_right;
-				Calib_Cm    += ((actual_left + actual_right) * 0.5f) * CM_PER_COUNT;
-			}
+			Calib_Frozen = 0;
+			Calib_Left  += actual_left;
+			Calib_Right += actual_right;
+			Calib_Cm    += ((actual_left + actual_right) * 0.5f) * CM_PER_COUNT;
 		}
 		else
 		{
 			Calib_IdleMs += 5;
-			if(Calib_IdleMs > 1000) Calib_Frozen = 1;//停手 1 秒 -> 锁定, 波形变成一条平线, 好读数
+			// 只有"已经走过一段"之后,静止 1 秒才锁定
+			if((Calib_IdleMs > 1000) && ((Calib_Left != 0.0f) || (Calib_Right != 0.0f)))
+			{
+				Calib_Frozen = 1;
+			}
 		}
 		Motor_SetDuty(0,0);//标定期间不驱动电机, 可以随便推
 		return;
