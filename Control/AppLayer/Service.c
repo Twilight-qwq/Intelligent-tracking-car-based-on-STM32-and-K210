@@ -175,10 +175,16 @@ void ServiceTask_30ms(uint32_t curr_ms)//外环方向环控制
 {
 	if(curr_ms - task_last_30ms < 30) return;
     task_last_30ms = curr_ms;
-    if(CarRun_State == 0) return;
 
+    // 停车时也要读视觉数据。
+    // 为什么:启动按键要等「收到过至少一帧视觉」才允许启动,而那个标志是在
+    // Task_FetchVisionData 里置的。如果这里先 return,停车状态下永远读不到数据,
+    // 标志永远置不上 —— 结果就是「怎么按都不走」(2026-11-20 夜里踩过的坑)。
     VisionData_t vis_data;
-    if(Task_FetchVisionData(&vis_data) == 0) return;//没拿到新数据直接结束避免用旧数据算
+    uint8_t got = Task_FetchVisionData(&vis_data);
+
+    if(CarRun_State == 0) return;
+    if(got == 0) return;//没拿到新数据直接结束避免用旧数据算
     Task_CalculateTargetSpeed(&vis_data);
 }
 
