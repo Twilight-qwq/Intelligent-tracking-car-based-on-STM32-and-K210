@@ -46,9 +46,10 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
 #define TURN_SPEED         15.0f    // 转弯时基速(= Speed_LargeAngle)
 #define TURN_VALUE         11.55f   // 转弯时差速(= Kp 0.231 * 视觉固定值 50)
 #define TURN_TIMEOUT_MS    800      // 兜底:0.8秒还没转够就强制结束(卡住了也不至于一直转)
-#define TURN_ARM_CM        72.0f    // 视觉报弯后,还要再直走这么多"换算厘米"才真的开始转
+#define TURN_ARM_CM        30.0f    // 视觉报弯后,还要再直走这么多"换算厘米"才真的开始转
                                     // 标定记录:填45时实测只走了约28厘米(比例0.62)
-                                    //          要真正走45厘米,45/0.62 = 72
+                                    // 2026-11-20 下午判弯改成只看最近3行,报弯点从59厘米挪到约35厘米,
+                                    // 所以补偿量从72减到30(约等于实际19厘米)
 #define CM_PER_COUNT       0.01405f // 1 个编码器计数 = 多少厘米(30档=30counts/5ms=84.3cm/s)
 #define TURN_ARM_SPEED     15.0f    // 等里程期间的直行速度:提前降到转弯基速,别带着最高速进弯
 
