@@ -46,14 +46,17 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
 #define TURN_SPEED         15.0f    // 转弯时基速(= Speed_LargeAngle)
 #define TURN_VALUE         11.55f   // 转弯时差速(= Kp 0.231 * 视觉固定值 50)
 #define TURN_TIMEOUT_MS    800      // 兜底:0.8秒还没转够就强制结束(卡住了也不至于一直转)
-#define TURN_ARM_CM        45.0f    // 视觉报弯后,还要再直走这么多厘米才真的开始转
+#define TURN_ARM_CM        72.0f    // 视觉报弯后,还要再直走这么多"换算厘米"才真的开始转
+                                    // 标定记录:填45时实测只走了约28厘米(比例0.62)
+                                    //          要真正走45厘米,45/0.62 = 72
 #define CM_PER_COUNT       0.01405f // 1 个编码器计数 = 多少厘米(30档=30counts/5ms=84.3cm/s)
 #define TURN_ARM_SPEED     15.0f    // 等里程期间的直行速度:提前降到转弯基速,别带着最高速进弯
 
 static uint8_t  Corner_Armed  = 0;    // 1=视觉已经报弯,正在等里程
 static uint8_t  Corner_Active = 0;    // 1=正在按固定差速转弯
 static uint8_t  Corner_Done   = 0;    // 1=这个弯已经转够90度,别再转
-static float    Corner_ArmDist = 0.0f; // 报弯后已经走的距离(厘米)
+static uint8_t  Corner_Clear  = 0;    // 连续多少帧视觉说"不是弯"
+static float    Corner_ArmDist = 0.0f; // 报弯后已经走的距离(换算厘米)
 static float    Corner_Accum  = 0.0f;  // 累计(左轮-右轮)counts, 就是转过的角度
 static uint32_t Corner_Tick   = 0;     // 本次转弯开始的时刻, 供兜底超时用
 
@@ -200,6 +203,7 @@ static void Task_CarStop(void)
     Corner_Armed   = 0;
     Corner_Active  = 0;
     Corner_Done    = 0;
+    Corner_Clear   = 3;
     Corner_ArmDist = 0.0f;
     Corner_Accum   = 0.0f;
 }
@@ -323,35 +327,46 @@ static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
      * ② 走够 TURN_ARM_CM：开始按固定差速转
      * ③ 累计(左轮-右轮)达到 TURN_DIFF_TARGET：转够了，立刻停并锁存
      * 视觉只负责"这里有弯"；什么时候开始转、转到什么时候，由轮子说了算。 */
-    if (state != 2)//不在弯里:全部复位,准备下一个弯
+    if (state == 2)
     {
-        Corner_Armed   = 0;
-        Corner_Active  = 0;
-        Corner_Done    = 0;
-        Corner_ArmDist = 0.0f;
-        Corner_Accum   = 0.0f;
+        Corner_Clear = 0;//视觉说这里就是弯,清掉"已经离开"的计数
+        if (Corner_Done)//这个弯已经转够了:直行,等视觉离开弯道
+        {
+            Corner_Armed  = 0;
+            Corner_Active = 0;
+            //注意:这里不能落到下面的PD里。状态2期间视觉发的是固定50,喂进PD会算出差速11.55,车会接着转。
+            target_left  = Speed_Straight;
+            target_right = Speed_Straight;
+            return;
+        }
+        else if (Corner_Active)//里程到了:固定差速转,不看视觉偏差
+        {
+            target_left  = TURN_SPEED + TURN_VALUE;
+            target_right = TURN_SPEED - TURN_VALUE;
+            return;
+        }
+        else //刚报弯:直着走过去。这段不能看视觉,因为状态2时视觉发的是固定50,看了就会提前转
+        {
+            Corner_Armed = 1;
+            target_left  = TURN_ARM_SPEED;
+            target_right = TURN_ARM_SPEED;
+            return;
+        }
     }
-    else if (Corner_Done)//这个弯已经转够了:直行,等视觉离开弯道
+    else
     {
-        Corner_Armed  = 0;
-        Corner_Active = 0;
-        //注意:这里不能落到下面的PD里。状态2期间视觉发的是固定50,喂进PD会算出差速11.55,车会接着转。
-        target_left  = Speed_Straight;
-        target_right = Speed_Straight;
-        return;
-    }
-    else if (Corner_Active)//里程到了:固定差速转,不看视觉偏差
-    {
-        target_left  = TURN_SPEED + TURN_VALUE;
-        target_right = TURN_SPEED - TURN_VALUE;
-        return;
-    }
-    else //刚报弯:直着走过去。这段不能看视觉,因为状态2时视觉发的是固定50,看了就会提前转
-    {
-        Corner_Armed = 1;
-        target_left  = TURN_ARM_SPEED;
-        target_right = TURN_ARM_SPEED;
-        return;
+        //要连续 3 帧(300毫秒)都说"不是弯",才算这个弯真的过去了。
+        //只掉一帧就清空的话:里程被清零要重走、锁存被清掉会再转一次,就是"反复画圈"的来源。
+        if (Corner_Clear < 3) Corner_Clear++;
+        if (Corner_Clear >= 3)
+        {
+            Corner_Armed   = 0;
+            Corner_Active  = 0;
+            Corner_Done    = 0;
+            Corner_ArmDist = 0.0f;
+            Corner_Accum   = 0.0f;
+        }
+        //不 return,继续走下面的正常 PD 控制
     }
 
     float error = raw_error;//P项用这份：±3 以内算 0，防中心附近细微抖动
