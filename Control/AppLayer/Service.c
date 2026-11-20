@@ -32,6 +32,24 @@ static float actual_left = 0.0f;
 static float actual_right = 0.0f;
 static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差，给 100ms 发波形
 
+/* ===== 弯道转向：用编码器累计差分量角度（2026-11-20 实车改造） =====
+ * 为什么不看视觉判断"弯结束"：弯里 66% 的帧好行<=2，视觉基本是瞎的，
+ * 由它决定什么时候停止转，角度必然每次都不一样。
+ * 原理：转弯时左右轮走的路不一样长，长度差 / 轮距 = 车转过的角度。
+ * 换算：1 count/5ms = 0.01405 厘米（由 30档=30counts/5ms=84.3cm/s 推出）
+ *       转 90° 需要累计 = 1.5708 * 轮距 / 0.01405 = 111.8 * 轮距
+ *       轮距 11 厘米 → 111.8 * 11 = 1230 counts
+ */
+#define TURN_DIFF_TARGET   1230.0f  // 转 90 度需要累计的(左-右)counts
+#define TURN_SPEED         15.0f    // 转弯时基速(= Speed_LargeAngle)
+#define TURN_VALUE         11.55f   // 转弯时差速(= Kp 0.231 * 视觉固定值 50)
+#define TURN_TIMEOUT_MS    800      // 兜底:0.8秒还没转够就强制结束(卡住了也不至于一直转)
+
+static uint8_t  Corner_Active = 0;    // 1=正在按固定差速转弯
+static uint8_t  Corner_Done   = 0;    // 1=这个弯已经转够90度,别再转
+static float    Corner_Accum  = 0.0f;  // 累计(左轮-右轮)counts, 就是转过的角度
+static uint32_t Corner_Tick   = 0;     // 本次转弯开始的时刻, 供兜底超时用
+
 static uint8_t  Indicator_Tick    = 0;   //闪烁计数
 static uint8_t  Indicator_Fault   = 0;   //视觉断线锁存, 收到新数据才清除
 static uint32_t Vision_LastTick   = 0;   //最后一次收到视觉数据的时刻
@@ -56,7 +74,7 @@ void Service_Init(void)
 	SysTimer_Init();
 	PID_VelocityLoop_Init(&pid_v_left,100.0f,10.0f,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//台架调定 Kp=100 Ki=10
 	PID_VelocityLoop_Init(&pid_v_right,100.0f,10.0f,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//台架调定，左右同参数
-	PID_LineLoop_Init(&pid_l,0.1f,0.0f,Speed_Straight,-(float)Speed_Straight);//方向环 Kp=0.1 Kd=0（2026-11-20 实车：0.5 画龙，0.1 刚好）
+	PID_LineLoop_Init(&pid_l,0.231f,0.53f,Speed_Straight,-(float)Speed_Straight);//方向环 Kp=0.1 Kd=0（2026-11-20 实车：0.5 画龙，0.1 刚好）
 	//Kp 上限 ≈ 1 / (k × 死区时间)
     WatchDog_Init();
 }
@@ -78,6 +96,17 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 	actual_right = (float)Encoder_GetDeltaRight();
 
 	if(CarRun_State == 0) return;
+
+	//弯道转向:每5毫秒把(左轮-右轮)的增量加进累计值,加满目标角度就停
+	if(Corner_Active)
+	{
+		Corner_Accum += (actual_left - actual_right);
+		if(Corner_Accum >= TURN_DIFF_TARGET || (curr_ms - Corner_Tick) > TURN_TIMEOUT_MS)
+		{
+			Corner_Active = 0;//转够90度了(或超时兜底),不再按弯道差速走
+			Corner_Done   = 1;//锁存:这个弯已经转过,视觉再喊弯也不转第二次
+		}
+	}
 
 	float pwm_left = PID_V_Calc(&pid_v_left,actual_left,target_left);
 	float pwm_right = PID_V_Calc(&pid_v_right,actual_right,target_right);
@@ -149,15 +178,18 @@ static void Task_CarStop(void)
     pid_l.err = 0;
     pid_l.err_diff_last = 0;
     pid_l.err_diff = 0;
+    Corner_Active = 0;
+    Corner_Done   = 0;
+    Corner_Accum  = 0.0f;
 }
 
 
 //蓝牙调参范围限制(参数上限/下限)
 #define LIMIT_V_KP_MAX      400.0f //内环速度环Kp上限(误差 2.5 counts 就打满，再大无意义)
 #define LIMIT_V_KI_MAX      80.0f  //内环速度环Ki上限(积分时间 6.3 ms，再大必振)
-#define LIMIT_LINE_KP_MAX   50.0f  //外环方向环Kp上限
-#define LIMIT_LINE_KD_MAX   100.0f //外环方向环Kd上限
-#define LIMIT_SPEED_MAX     100.0f //基础速度上限
+#define LIMIT_LINE_KP_MAX   1.0f  //外环方向环Kp上限
+#define LIMIT_LINE_KD_MAX   1.0f //外环方向环Kd上限
+#define LIMIT_SPEED_MAX     37.0f //基础速度上限
 //3.处理蓝牙指令: 启停 + 调参(100ms)
 static void Task_BtCommand(void)
 {
@@ -259,9 +291,39 @@ static uint8_t Task_FetchVisionData(VisionData_t *vis_data)
 // 6. 计算方向环与控制输出(30ms)
 static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
 {
+    uint8_t state = vis_data->car_state;
+
     // 原始偏差：D项要用它，不能让它经过死区（死区会把 4 变成 0，凭空造台阶）
     float raw_error = (float)vis_data->error;
     last_vision_error = raw_error;//波形发原始偏差，方便看视觉本身跳不跳
+
+    /* ---------- 弯道转向状态机 ----------
+     * 视觉只负责"报告这里有弯"；转多少、什么时候停，由轮子说了算。
+     * 累计(左轮-右轮)达到 TURN_DIFF_TARGET 就等于转够了，立刻停，并锁存，
+     * 免得视觉还喊着弯又转第二次。 */
+    if (state != 2)//不在弯里:全部复位,准备下一个弯
+    {
+        Corner_Active = 0;
+        Corner_Done   = 0;
+        Corner_Accum  = 0.0f;
+    }
+    else if (Corner_Done)//这个弯已经转够了:当直道处理,别再转
+    {
+        Corner_Active = 0;
+        state = 0;
+    }
+    else //还在转:固定差速,不看视觉偏差
+    {
+        if (Corner_Active == 0)//刚进弯
+        {
+            Corner_Active = 1;
+            Corner_Accum  = 0.0f;
+            Corner_Tick   = Service_Clock();
+        }
+        target_left  = TURN_SPEED + TURN_VALUE;
+        target_right = TURN_SPEED - TURN_VALUE;
+        return;
+    }
 
     float error = raw_error;//P项用这份：±3 以内算 0，防中心附近细微抖动
     if(fabsf(error)<=3)
@@ -272,7 +334,7 @@ static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
     float turn = PID_L_Calc(&pid_l,error,raw_error);//差速大小(P用error，D用raw_error)
     float base_speed = Speed_Straight;
 
-    switch (vis_data->car_state)
+    switch (state)
     {
     case 1://直角弯或钝角弯
         base_speed = Speed_SmallAngle;
