@@ -1,4 +1,4 @@
-﻿#ifndef __PROTOCOL_H
+#ifndef __PROTOCOL_H
 #define __PROTOCOL_H
 #include "stm32f10x.h"
 
@@ -43,4 +43,43 @@ typedef struct {
 } BtCommand_t;
 
 uint8_t Protocol_BtParse(uint8_t rx_byte, BtCommand_t *out_cmd);
+
+
+/* =========================================================================
+ * 语音模块协议（USART3，PB10/PB11）                        2026-11-21 新增
+ * -------------------------------------------------------------------------
+ * 和视觉、蓝牙共用帧头 0xAA / 帧尾 0x55，但跑在另一个串口上，三方互不干扰。
+ *
+ * 两种帧，靠「指令字节」的大小区分，不需要额外的类型字段：
+ *
+ *   短帧（不带参数，共 3 字节）：
+ *        AA | 指令(0x01~0x7F) | 55
+ *   长帧（带参数）：
+ *        AA | 指令(0x80~0xFF) | 长度 n | n 个参数字节 | 55
+ *
+ * 指令表（短帧）：
+ *   0x01  启动     ->  AA 01 55
+ *   0x02  停车     ->  AA 02 55
+ *   0x03 ~ 0x7F    还没用到。以后加新指令（比如"暂停""报数"）
+ *                  只需在下面加一行 #define，解析代码一个字都不用改。
+ *
+ * 为什么还要留长帧：
+ *   以后万一要"把参数从语音端发下来"（比如改速度、指定第几号弯），
+ *   短帧的 1 个字节装不下。长帧一次最多带 VOICE_PAYLOAD_MAX 个字节，
+ *   超过就整帧作废，不会写到缓冲区外面去。
+ * ========================================================================= */
+#define VOICE_CMD_START      0x01   // 启动
+#define VOICE_CMD_STOP       0x02   // 停车
+#define VOICE_CMD_EXT_MIN    0x80   // >= 这个值的指令，后面跟着「长度 + 参数」
+#define VOICE_PAYLOAD_MAX    8      // 长帧最多几个参数（不够就把这个数改大）
+
+typedef struct {
+    uint8_t cmd;                        // 指令码（0x01 启动 / 0x02 停车 / >=0x80 长帧）
+    uint8_t len;                        // 长帧的参数个数；短帧是 0
+    uint8_t data[VOICE_PAYLOAD_MAX];    // 长帧的参数
+} VoiceCommand_t;
+
+void    Protocol_VoiceParse(uint8_t data);              // 中断里每收到一个字节就喂进来
+uint8_t Protocol_GetVoice(VoiceCommand_t *out_cmd);     // 返回 1 = 拿到一条新指令，0 = 没有
+
 #endif

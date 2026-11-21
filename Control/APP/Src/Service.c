@@ -483,11 +483,37 @@ static void Task_StartStopCmd(void)
         CarRun_Set(!CarRun_State);
     }
 
-    /* 未来在这里直接加上语音的代码，无需改动其他任何地方：
+    /* 语音启停（2026-11-21 正式接入）
+     * ------------------------------------------------------------------
+     * 这里原来是一段注释掉的计划，原文是：
+     *     uint8_t voice_cmd = Voice_GetCommand();
+     *     if (voice_cmd == 0x01) CarRun_State = 1;
+     *     else if (voice_cmd == 0x02) CarRun_State = 0;
+     *
+     * 现在按原计划接上，判断逻辑一模一样，只多了两道保险：
+     *   ① 启动走 CarRun_Set()（本文件底部写着"启停状态的唯一写入口"），
+     *      不直接给 CarRun_State 赋值，这样以后加"启动要做的事"只改一个地方；
+     *   ② 启动前查 Vision_EverSeen —— 和按键同一条门禁。
+     *      视觉没起来就启动的话，车会先愣着，等 K210 那 10 秒过了再突然窜出去。
+     *
+     * 停车随时有效，不需要门禁（停车是"安全方向"，任何条件下都该生效）。
+     *
+     * 帧格式在 MID/Protocol.c 里解析：
+     *     启动 AA 01 55  ->  Voice_GetCommand() 返回 0x01
+     *     停车 AA 02 55  ->  返回 0x02
+     *     没有新指令     ->  返回 0 */
     uint8_t voice_cmd = Voice_GetCommand();
-    if (voice_cmd == 0x01) CarRun_State = 1;
-    else if (voice_cmd == 0x02) CarRun_State = 0;
-    */
+    if (voice_cmd == VOICE_CMD_START)
+    {
+        if (Vision_EverSeen != 0)
+        {
+            CarRun_Set(1);
+        }
+    }
+    else if (voice_cmd == VOICE_CMD_STOP)
+    {
+        CarRun_Set(0);
+    }
 }
 
 //2.停车时的安全清理,防止积分饱和(100ms)
