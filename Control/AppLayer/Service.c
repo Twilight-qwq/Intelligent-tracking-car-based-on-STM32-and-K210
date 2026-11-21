@@ -132,6 +132,239 @@ uint32_t Service_Clock(void)
 	return SysTimer_GetTick();
 }
 
+/* =========================================================================
+ * 陀螺仪 ICM-20602（六轴，软件 I2C，PB0 = SCL，PB1 = SDA）  2026-11-21 新增
+ *
+ * 芯片确认：用户实际用的是 ICM-20602（不是 MPU6050）。
+ *   和 MPU6050 的寄存器基本兼容（PWR_MGMT_1 / GYRO_CONFIG / GYRO_ZOUT 地址一样），
+ *   但有三处不同，见下面的 ICM_ 开头的注释。
+ *
+ * 干什么：量"车真的转了多少度"，替代现在"数编码器计数"的做法。
+ *         编码器数的是轮子转了多少，中间隔着打滑；陀螺仪直接量车身转速。
+ *
+ * 为什么用软件 I2C 而不是硬件 I2C：
+ *   STM32F103 的硬件 I2C 在从机拉住总线时可能卡死，而这里是 5 毫秒控制周期，
+ *   卡死 = 电机失控。软件 I2C 每一位都是固定时钟数，最坏是"这次读失败"，
+ *   不会把主循环挂住。
+ *
+ * 为什么不需要卡尔曼滤波 / 姿态解算：
+ *   那些是为了"长时间知道车头朝哪"。这里只积分 0.4 秒（转一个弯的时间），
+ *   零偏校准后 0.1°/秒，0.4 秒只漂 0.04°，远小于 1° 的目标。
+ *   每过一个弯就把角度清零，不累积。
+ * ========================================================================= */
+#define GYRO_BENCH_TEST   1        /* 1 = 台架模式显示陀螺仪; 0 = 显示原来的编码器标定 */
+
+#define SI2C_PORT         GPIOB
+#define SI2C_SCL_PIN      GPIO_Pin_0
+#define SI2C_SDA_PIN      GPIO_Pin_1
+
+#define MPU_ADDR          0x68     /* SAO/AD0 接地时是 0x68（悬空也可能是 0x68，建议直接接地） */
+#define MPU_REG_SMPLRT    0x19
+#define MPU_REG_CONFIG    0x1A
+#define MPU_REG_GYROCFG   0x1B
+#define MPU_REG_GYRO_ZOUT 0x43
+#define MPU_REG_PWRMGMT   0x6B
+#define MPU_REG_WHOAMI    0x75
+
+/* ICM_ 第 1 处不同：WHO_AM_I 的返回值。
+ *   ICM-20602 = 0x12（18）
+ *   MPU6050   = 0x68（104）
+ * 两个都认，认到哪个都能用。 */
+#define GYRO_ID_ICM20602  0x12
+#define GYRO_ID_MPU6050   0x68
+
+#define GYRO_LSB_PER_DPS  131.0f   /* ±250°/s 档的分辨率，两者相同 */
+
+static uint8_t  Gyro_WhoAmI   = 0;     /* 读回来的 0x75 寄存器，应该是 0x68 */
+static uint8_t  Gyro_Ok       = 0;     /* 1 = 模块活着 */
+static int16_t  Gyro_Zraw     = 0;     /* Z 轴原始读数 */
+static float    Gyro_Bias     = 0.0f;  /* 静止零偏 */
+static float    Gyro_Angle    = 0.0f;  /* 累计角度（度） */
+static float    Gyro_BiasSum  = 0.0f;
+static uint16_t Gyro_BiasN    = 0;
+static uint8_t  Gyro_BiasDone = 0;
+static uint16_t Gyro_ErrCnt   = 0;
+
+#define SCL_H()    GPIO_SetBits(SI2C_PORT,   SI2C_SCL_PIN)
+#define SCL_L()    GPIO_ResetBits(SI2C_PORT, SI2C_SCL_PIN)
+#define SDA_H()    GPIO_SetBits(SI2C_PORT,   SI2C_SDA_PIN)
+#define SDA_L()    GPIO_ResetBits(SI2C_PORT, SI2C_SDA_PIN)
+#define SDA_READ() GPIO_ReadInputDataBit(SI2C_PORT, SI2C_SDA_PIN)
+
+/* 位延时：72MHz 下大约 1 微秒，凑成 100kHz 左右 */
+static void I2C_Delay(void)
+{
+	volatile uint8_t i;
+	for(i = 0; i < 25; i++) { }
+}
+
+static void I2C_InitPins(void)
+{
+	GPIO_InitTypeDef g;
+	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB, ENABLE);
+	g.GPIO_Pin   = SI2C_SCL_PIN | SI2C_SDA_PIN;
+	g.GPIO_Mode  = GPIO_Mode_Out_OD;   /* 开漏：写 1 = 释放，靠模块上的上拉电阻拉高 */
+	g.GPIO_Speed = GPIO_Speed_50MHz;
+	GPIO_Init(SI2C_PORT, &g);
+	SCL_H();
+	SDA_H();
+}
+
+static void I2C_Start(void)
+{
+	SDA_H(); SCL_H(); I2C_Delay();
+	SDA_L(); I2C_Delay();
+	SCL_L(); I2C_Delay();
+}
+
+static void I2C_Stop(void)
+{
+	SDA_L(); I2C_Delay();
+	SCL_H(); I2C_Delay();
+	SDA_H(); I2C_Delay();
+}
+
+/* 返回 1 = 收到应答，0 = 没应答（器件没接或坏了） */
+static uint8_t I2C_WriteByte(uint8_t b)
+{
+	uint8_t i, ack;
+	for(i = 0; i < 8; i++)
+	{
+		if(b & 0x80) { SDA_H(); } else { SDA_L(); }
+		b <<= 1;
+		I2C_Delay();
+		SCL_H(); I2C_Delay();
+		SCL_L(); I2C_Delay();
+	}
+	SDA_H();                 /* 释放 SDA，等从机拉低表示应答 */
+	I2C_Delay();
+	SCL_H(); I2C_Delay();
+	ack = (SDA_READ() == 0) ? 1 : 0;
+	SCL_L(); I2C_Delay();
+	return ack;
+}
+
+static uint8_t I2C_ReadByte(uint8_t give_ack)
+{
+	uint8_t i, b = 0;
+	SDA_H();
+	for(i = 0; i < 8; i++)
+	{
+		I2C_Delay();
+		SCL_H(); I2C_Delay();
+		b <<= 1;
+		if(SDA_READ()) { b |= 1; }
+		SCL_L(); I2C_Delay();
+	}
+	if(give_ack) { SDA_L(); } else { SDA_H(); }
+	I2C_Delay();
+	SCL_H(); I2C_Delay();
+	SCL_L(); I2C_Delay();
+	SDA_H();
+	return b;
+}
+
+static uint8_t MPU_WriteReg(uint8_t reg, uint8_t val)
+{
+	I2C_Start();
+	if(!I2C_WriteByte((uint8_t)(MPU_ADDR << 1))) { I2C_Stop(); return 0; }
+	if(!I2C_WriteByte(reg))                      { I2C_Stop(); return 0; }
+	if(!I2C_WriteByte(val))                      { I2C_Stop(); return 0; }
+	I2C_Stop();
+	return 1;
+}
+
+static uint8_t MPU_ReadRegs(uint8_t reg, uint8_t *buf, uint8_t n)
+{
+	uint8_t i;
+	I2C_Start();
+	if(!I2C_WriteByte((uint8_t)(MPU_ADDR << 1)))       { I2C_Stop(); return 0; }
+	if(!I2C_WriteByte(reg))                             { I2C_Stop(); return 0; }
+	I2C_Start();                                        /* 重复起始 */
+	if(!I2C_WriteByte((uint8_t)((MPU_ADDR << 1) | 1))) { I2C_Stop(); return 0; }
+	for(i = 0; i < n; i++)
+	{
+		buf[i] = I2C_ReadByte((uint8_t)(i < (uint8_t)(n - 1)));
+	}
+	I2C_Stop();
+	return 1;
+}
+
+/* 简单毫秒延时：72MHz 下大约 12000 次空循环 = 1 毫秒 */
+static void Gyro_DelayMs(uint16_t ms)
+{
+	volatile uint32_t i;
+	uint32_t n = (uint32_t)ms * 12000u;
+	for(i = 0; i < n; i++) { }
+}
+
+/* 只做三件事：确认模块活着、唤醒、配置量程。很快，不阻塞。 */
+void Gyro_Init(void)
+{
+	uint8_t b = 0, try;
+
+	/* ICM_ 第 2 处不同：ICM-20602 上电后要约 100 毫秒才开始应答 I2C，
+	 * 不等这一下，第一次读会全军覆没（表现为"模块没接上"）。 */
+	Gyro_DelayMs(100);
+
+	I2C_InitPins();
+	for(try = 0; try < 5; try++)
+	{
+		if(MPU_ReadRegs(MPU_REG_WHOAMI, &b, 1))
+		{
+			if((b == GYRO_ID_ICM20602) || (b == GYRO_ID_MPU6050))
+			{
+				Gyro_Ok = 1;
+				break;
+			}
+		}
+		Gyro_DelayMs(20);          /* 没认出来就等 20 毫秒再试，最多 5 次 */
+	}
+	Gyro_WhoAmI = b;
+	if(!Gyro_Ok) { return; }       /* 模块不在，后面全部跳过，不影响跑车 */
+
+	/* ICM_ 第 3 处不同：写 0x01 而不是 0x00。
+	 *   0x00 = 唤醒，但时钟用内部 RC（会漂）
+	 *   0x01 = 唤醒 + 时钟切到陀螺仪 PLL（ICM-20602 推荐这个）
+	 * 如果读出来角速度一直是 0，把它改回 0x00 再试。 */
+	MPU_WriteReg(MPU_REG_PWRMGMT, 0x01);
+	Gyro_DelayMs(10);
+	MPU_WriteReg(MPU_REG_SMPLRT,  0x04);/* 采样率 1kHz/(1+4) = 200Hz，和 5 毫秒对齐 */
+	MPU_WriteReg(MPU_REG_CONFIG,  0x03);/* 低通 44Hz */
+	MPU_WriteReg(MPU_REG_GYROCFG, 0x00);/* ±250°/s */
+}
+
+/* 每 5 毫秒调一次：前 1 秒测零偏，之后开始积分 */
+void Gyro_Update(void)
+{
+	uint8_t buf[2];
+	int16_t z;
+
+	if(!Gyro_Ok) { return; }
+
+	if(!MPU_ReadRegs(MPU_REG_GYRO_ZOUT, buf, 2))
+	{
+		if(Gyro_ErrCnt < 60000) { Gyro_ErrCnt++; }
+		return;
+	}
+	z = (int16_t)(((uint16_t)buf[0] << 8) | buf[1]);
+	Gyro_Zraw = z;
+
+	if(!Gyro_BiasDone)
+	{
+		Gyro_BiasSum += (float)z;
+		Gyro_BiasN++;
+		if(Gyro_BiasN >= 200)           /* 200 × 5 毫秒 = 1 秒，要求这 1 秒车是静止的 */
+		{
+			Gyro_Bias     = Gyro_BiasSum / (float)Gyro_BiasN;
+			Gyro_BiasDone = 1;
+		}
+		return;
+	}
+
+	Gyro_Angle += ((float)z - Gyro_Bias) / GYRO_LSB_PER_DPS * 0.005f;
+}
+
 void Service_Init(void)
 {
 	NVIC_PriorityGroupConfig(NVIC_PriorityGroup_2);
@@ -148,6 +381,7 @@ void Service_Init(void)
 	BlueTooth_Init();
 	Debug_Init();
 	Indicator_Init();
+	Gyro_Init();          /* 陀螺仪：模块不在也不影响，Gyro_Ok 会保持 0 */
 	k210rcv_Init();
 	SysTimer_Init();
 	PID_VelocityLoop_Init(&pid_v_left,100.0f,10.0f,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//台架调定 Kp=100 Ki=10
@@ -198,6 +432,7 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 			}
 		}
 		Motor_SetDuty(0,0);//标定期间不驱动电机, 可以随便推
+		Gyro_Update();    /* 台架模式里顺手读陀螺仪：前 1 秒测零偏，之后积分角度 */
 		return;
 	}
 
@@ -420,11 +655,27 @@ static void Task_SendTelemetry(void)
 
     if(Calib_Mode)//台架标定:五个通道换成"累计值", 方便读数
     {
+#if GYRO_BENCH_TEST
+        /* 2026-11-21 陀螺仪台架测试：
+         *   ch1 = WHO_AM_I，应该是 104（0x68）；0 或 255 说明模块没接上
+         *   ch2 = 陀螺仪 Z 轴原始读数（静止时应该在一个固定值附近小幅抖动）
+         *   ch3 = 累计角度（度）。手把车转 90°，这里应该走到 ±90 左右
+         *   ch4 = 零偏（上电后 1 秒自动测出来）
+         *   ch5 = 读失败次数，一直是 0 才正常
+         */
+        data.target_left  = (float)Gyro_WhoAmI;
+        data.actual_left  = (float)Gyro_Zraw;
+        data.target_right = Gyro_Angle;
+        data.actual_right = Gyro_Bias;
+        data.error        = (float)Gyro_ErrCnt;
+        (void)Calib_Frozen;                          /* 这个模式下用不到，避免"设了没用"的警告 */
+#else
         data.target_left  = Calib_Left;              // ch1 左轮累计 counts
         data.actual_left  = Calib_Right;             // ch2 右轮累计 counts
         data.target_right = Calib_Cm;                // ch3 里程(换算厘米) <- 和卷尺比这个
         data.actual_right = Calib_Frozen ? 1.0f : 0.0f;// ch4 =1 表示数值已锁定
         data.error        = 0.0f;                    // ch5 保留
+#endif
     }
     else
     {
