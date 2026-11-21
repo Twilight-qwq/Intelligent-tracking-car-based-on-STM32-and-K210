@@ -210,7 +210,15 @@ void Protocol_VoiceParse(uint8_t data)
         case VO_RECV_LEN:
             if(data > VOICE_PAYLOAD_MAX)     //长度超了：这一帧作废，绝不越界
             {
-                current_state = VO_WAIT_HEADER;
+                /* 2026-11-21 加：如果这个字节正好是帧头 0xAA（0xAA = 170 > 8，
+                 * 一定落进这个分支），说明上一帧断了、这是新一帧的开头，
+                 * 直接当帧头用，不用白丢一帧再重新等。
+                 *
+                 * 为什么只在「等长度」这里重同步、不在「收参数」那里也加：
+                 *   参数本身完全可能等于 0xAA。在收参数时把 0xAA 当帧头，
+                 *   会把一个合法参数误判成新帧的开头，反而把好帧搞坏。
+                 *   收参数阶段靠帧尾校验兜底：断了就整帧作废，最多丢一帧。 */
+                current_state = (data == FRAME_HEADER) ? VO_RECV_CMD : VO_WAIT_HEADER;
                 break;
             }
             voice_data_len = data;

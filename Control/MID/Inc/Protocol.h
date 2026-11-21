@@ -63,6 +63,11 @@ uint8_t Protocol_BtParse(uint8_t rx_byte, BtCommand_t *out_cmd);
  *   0x03 ~ 0x7F    还没用到。以后加新指令（比如"暂停""报数"）
  *                  只需在下面加一行 #define，解析代码一个字都不用改。
  *
+ * 【0x00 是保留值，不能当指令用】                            2026-11-21
+ *   因为 Voice_GetCommand() 用 0 表示"这段时间没有新指令"。
+ *   模块要是发 AA 00 55，返回的也是 0，上层会当成"没收到"，指令就丢了。
+ *   所以新指令请从 0x03 开始往上排，别用 0x00。
+ *
  * 为什么还要留长帧：
  *   以后万一要"把参数从语音端发下来"（比如改速度、指定第几号弯），
  *   短帧的 1 个字节装不下。长帧一次最多带 VOICE_PAYLOAD_MAX 个字节，
@@ -81,5 +86,12 @@ typedef struct {
 
 void    Protocol_VoiceParse(uint8_t data);              // 中断里每收到一个字节就喂进来
 uint8_t Protocol_GetVoice(VoiceCommand_t *out_cmd);     // 返回 1 = 拿到一条新指令，0 = 没有
+
+/* 【以后用长帧时注意】                                       2026-11-21
+ * BSP/Voice.c 里的 Voice_GetCommand() 只返回「指令码」，
+ * 长帧带的参数会被它丢掉。所以：
+ *   - 短帧（启动/停车这种）→ 用 Voice_GetCommand() 就行，返回值直接比 0x01 / 0x02
+ *   - 长帧（>=0x80，带参数）→ 必须自己调 Protocol_GetVoice(&cmd)，
+ *                             从 cmd.data[] 里取参数，别走那个包装函数 */
 
 #endif
