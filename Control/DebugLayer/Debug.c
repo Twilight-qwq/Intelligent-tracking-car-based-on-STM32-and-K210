@@ -1,5 +1,6 @@
-﻿#include "stm32f10x.h"
+#include "stm32f10x.h"
 #include "Debug.h"
+#include "SysTimer.h"
 #include <string.h>
 
 
@@ -65,15 +66,27 @@ static void Debug_AnalyseData(debugdata_t *data,float *channels)
     channels[CH_ERROR] 			= 	data->error;
 }
 
+/* 发送超时（2026-11-21 新增）
+ * 为什么要加：下面那个 while 原来没有上限。正常情况 2 毫秒就出来了，
+ *   但万一 USART2 出问题、TXE 永远不置位，主循环就永久卡死在这里 —— 车直接失控。
+ *   无上限的等待和有上限的等待，性质完全不同：前者会死，后者只是慢。
+ * 5 毫秒的来历：正常发完 24 字节约 2.1 毫秒（24 × 87 微秒），留 2.4 倍余量。
+ * 超时了怎么办：直接放弃这一帧。VOFA+ 那边收到半截帧会自己丢掉，
+ *   波形数据本来就是调试用的，少一帧不影响跑车。 */
+#define DEBUG_TX_TIMEOUT_MS   5
+
 void Debug_log(debugdata_t *data)
 {
 	float channels[DEBUG_FLOAT_NUM];
 	uint8_t i;
+	uint32_t start_ms;
 
 	Debug_AnalyseData(data,channels);
 
 	memcpy(debug_tx_buf,channels , sizeof(channels));
 	memcpy(debug_tx_buf+sizeof(channels), vofa_frame_tail, sizeof(vofa_frame_tail));
+
+	start_ms = SysTimer_GetTick();
 
 	/* 阻塞发送：每发一个字节先等 TXE(发送寄存器空)置位，再塞下一个。
 	 * 24 字节在 115200 下大约 2ms，100ms 才发一次，占用可以忽略。
@@ -83,7 +96,11 @@ void Debug_log(debugdata_t *data)
 	{
 		while(USART_GetFlagStatus(USART2, USART_FLAG_TXE) == RESET)
 		{
-			/* 空等硬件把上一个字节搬走 */
+			/* 等太久就放弃这一帧，别把主循环挂在这里 */
+			if((SysTimer_GetTick() - start_ms) > DEBUG_TX_TIMEOUT_MS)
+			{
+				return;
+			}
 		}
 		USART_SendData(USART2, debug_tx_buf[i]);
 	}
