@@ -12,6 +12,13 @@
 #define DEBUG_FLOAT_NUM 5
 #define DEBUG_TX_SIZE   (DEBUG_FLOAT_NUM * 4 + 4)  // 结果是 24 字节
 
+/* 用 DMA 还是轮询发波形（2026-11-21 加）
+ * 1 = DMA：Debug_log 几微秒就返回，发送交给 DMA，不占主循环
+ * 0 = 轮询：老办法，阻塞约 2.1 毫秒，但已验证可用
+ * 为什么留开关：DMA 写错的表现是「VOFA+ 一个字节都收不到」，
+ *   烧 1 不放心就翻回 0，两分钟内能确认。 */
+#define DEBUG_USE_DMA   1
+
 typedef enum {
     CH_TARGET_LEFT = 0,  //通道0:左轮目标速度
     CH_ACTUAL_LEFT,      //通道1:左轮实际速度
@@ -23,6 +30,8 @@ typedef enum {
 static uint8_t debug_tx_buf[DEBUG_TX_SIZE] = {0};
 static const uint8_t vofa_frame_tail[] = {0x00, 0x00, 0x80, 0x7F};
 //VOFA+ JustFloat固定帧尾
+
+static uint8_t debug_dma_busy = 0;   /* 1 = 上一帧还在发（2026-11-21 加） */
 
 void Debug_Init(void)
 {
@@ -42,7 +51,13 @@ void Debug_Init(void)
 
 	DMA_DeInit(DMA1_Channel7);
 	DMA_InitTypeDef DMA_InitStruct;
-	DMA_InitStruct.DMA_BufferSize=0;
+	/* 2026-11-21 修两处错：
+	 *   ① DMA_BufferSize 原来写 0 —— 那是「这次搬几个字节」，写 0 就是搬 0 个，
+	 *      使能后立刻结束，一个字节都不会出。这就是当年「DMA 一个字节都出不去」的原因。
+	 *   ② 原来没有 DMA_Cmd() 使能通道，通道不工作。
+	 * 现在的做法：初始化时按整帧长度配好，通道先关着；
+	 *   每次 Debug_log 里先关、重装长度、清标志、再开（见下面的发送部分）。 */
+	DMA_InitStruct.DMA_BufferSize = DEBUG_TX_SIZE;
 	DMA_InitStruct.DMA_DIR = DMA_DIR_PeripheralDST;
 	DMA_InitStruct.DMA_M2M = DMA_M2M_Disable;
 	DMA_InitStruct.DMA_MemoryBaseAddr = (uint32_t)debug_tx_buf;
@@ -54,6 +69,8 @@ void Debug_Init(void)
 	DMA_InitStruct.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
 	DMA_InitStruct.DMA_Priority = DMA_Priority_Medium;
 	DMA_Init(DMA1_Channel7,&DMA_InitStruct);
+
+	DMA_Cmd(DMA1_Channel7,DISABLE);      /* 先关着，发送时再开 */
 	USART_DMACmd(USART2,USART_DMAReq_Tx,ENABLE);
 }
 
@@ -66,32 +83,53 @@ static void Debug_AnalyseData(debugdata_t *data,float *channels)
     channels[CH_ERROR] 			= 	data->error;
 }
 
-/* 发送超时（2026-11-21 新增）
- * 为什么要加：下面那个 while 原来没有上限。正常情况 2 毫秒就出来了，
- *   但万一 USART2 出问题、TXE 永远不置位，主循环就永久卡死在这里 —— 车直接失控。
- *   无上限的等待和有上限的等待，性质完全不同：前者会死，后者只是慢。
- * 5 毫秒的来历：正常发完 24 字节约 2.1 毫秒（24 × 87 微秒），留 2.4 倍余量。
- * 超时了怎么办：直接放弃这一帧。VOFA+ 那边收到半截帧会自己丢掉，
- *   波形数据本来就是调试用的，少一帧不影响跑车。 */
+/* 轮询模式下的发送超时（DEBUG_USE_DMA = 0 时才会用到）
+ * 原来那个 while 没有上限：正常 2 毫秒就出来，但万一 USART2 出问题、
+ * TXE 永远不置位，主循环就永久卡死 —— 车直接失控。
+ * 5 毫秒 = 正常 2.1 毫秒的 2.4 倍余量；超时就放弃这一帧。 */
 #define DEBUG_TX_TIMEOUT_MS   5
 
 void Debug_log(debugdata_t *data)
 {
 	float channels[DEBUG_FLOAT_NUM];
+#if !DEBUG_USE_DMA
 	uint8_t i;
 	uint32_t start_ms;
+#endif
 
 	Debug_AnalyseData(data,channels);
 
-	memcpy(debug_tx_buf,channels , sizeof(channels));
+	memcpy(debug_tx_buf, channels, sizeof(channels));
 	memcpy(debug_tx_buf+sizeof(channels), vofa_frame_tail, sizeof(vofa_frame_tail));
 
+#if DEBUG_USE_DMA
+	/* DMA 发送（2026-11-21 改）
+	 * 顺序不能错：先关通道 → 重装字节数 → 清完成标志 → 再开通道。
+	 * 关通道再重装，是为了防止「上一帧还没发完就改计数器」把数据发乱。 */
+	if (debug_dma_busy)
+	{
+		if (DMA_GetFlagStatus(DMA1_FLAG_TC7) == SET)
+		{
+			debug_dma_busy = 0;      /* 上一帧已经发完了 */
+		}
+		else
+		{
+			/* 上一帧还在发（正常不会发生：24 字节只要 2.1 毫秒，100 毫秒才发一次）。
+			 * 真撞上就丢掉这一帧，别去改还在用的缓冲区。 */
+			return;
+		}
+	}
+
+	DMA_Cmd(DMA1_Channel7, DISABLE);
+	DMA_SetCurrDataCounter(DMA1_Channel7, DEBUG_TX_SIZE);
+	DMA_ClearFlag(DMA1_FLAG_TC7);
+	DMA_Cmd(DMA1_Channel7, ENABLE);
+	debug_dma_busy = 1;
+#else
 	start_ms = SysTimer_GetTick();
 
 	/* 阻塞发送：每发一个字节先等 TXE(发送寄存器空)置位，再塞下一个。
-	 * 24 字节在 115200 下大约 2ms，100ms 才发一次，占用可以忽略。
-	 * 原来用 DMA1_Channel7 的写法实测一个字节都出不去，
-	 * 改成轮询就通了，所以这里不再走 DMA（Debug_Init 里的 DMA 配置保留但不用）。 */
+	 * 24 字节在 115200 下大约 2ms，100ms 才发一次，占用可以忽略。 */
 	for(i = 0; i < DEBUG_TX_SIZE; i++)
 	{
 		while(USART_GetFlagStatus(USART2, USART_FLAG_TXE) == RESET)
@@ -104,5 +142,6 @@ void Debug_log(debugdata_t *data)
 		}
 		USART_SendData(USART2, debug_tx_buf[i]);
 	}
+#endif
 }
 #endif
