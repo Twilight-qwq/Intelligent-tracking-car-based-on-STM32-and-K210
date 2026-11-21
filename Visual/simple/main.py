@@ -16,14 +16,14 @@ import vision
 from judge import Judge
 
 
-def send_frame(uart, err, state):
+def send_frame(uart, error, state):
     """发一帧 4 字节。
 
-    err 可能是负数（如 -40），串口一次只能发 0~255。
-    -40 的 8 位补码是 1101 1000 = 216，err & 0xFF 就得到 216，
+    error 可能是负数（如 -40），串口一次只能发 0~255。
+    -40 的 8 位补码是 1101 1000 = 216，error & 0xFF 就得到 216，
     STM32 按 int8_t 读回来又是 -40，两边就对齐了。
     """
-    uart.write(bytes((0xAA, err & 0xFF, state & 0xFF, 0x55)))
+    uart.write(bytes((0xAA, error & 0xFF, state & 0xFF, 0x55)))
 
 
 def main():
@@ -47,6 +47,9 @@ def main():
         sensor.set_vflip(True)
     sensor.skip_frames(time=2000)               # 等自动曝光稳定
 
+
+    #这里小车刚开机的时候是不是不会动,如果是可不可以先让小车保持最低档速度直到超过2000ms
+
     lane_judge = Judge()        # 判断器，负责记住丢线帧数等状态
     clock = time.clock()        # 测帧率
     frame_count = 0             # 帧计数，控制打印频率
@@ -55,12 +58,17 @@ def main():
         clock.tick()
         image = sensor.snapshot()               # 1. 拍照
 
+
+
         # 2. 找线：6 个返回值
-        raw_error, far_raw_error, found_rows, bar_rows, far_found_rows, corner_signal = vision.find_lane(image)
+        raw_error, far_raw_error, found_row_count, bar_row_count, far_found_row_count, corner_signal = vision.find_lane(image)
+
+        #bar_row_count可能不合理,到时候实地考察一下终点线的样式
+
         # 3. 拍板：变成真正要发的两个数
-        err, state = lane_judge.decide(raw_error, far_raw_error, found_rows, bar_rows, far_found_rows, corner_signal)
+        error, state = lane_judge.decide(raw_error, far_raw_error, found_row_count, bar_row_count, far_found_row_count, corner_signal)
         # 4. 发送
-        send_frame(uart, err, state)
+        send_frame(uart, error, state)
 
         if config.DEBUG_DRAW:
             # 画个十字，方便肉眼判断中心偏没偏；只影响显示
@@ -68,8 +76,8 @@ def main():
 
         frame_count += 1
         if frame_count % config.PRINT_EVERY_FRAMES == 0:
-            print("err=%d far=%d st=%d hits=%d corner=%d fps=%.1f"
-                  % (err, far_raw_error, state, found_rows, corner_signal, clock.fps()))
+            print("error=%d far=%d st=%d hits=%d corner=%d fps=%.1f"
+                  % (error, far_raw_error, state, found_row_count, corner_signal, clock.fps()))
 
 
 if __name__ == "__main__":
