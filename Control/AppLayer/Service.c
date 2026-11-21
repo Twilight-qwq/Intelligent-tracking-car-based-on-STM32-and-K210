@@ -138,7 +138,7 @@ uint32_t Service_Clock(void)
  * 这里只留「怎么用它」：
  *   Service_Init()     里调一次 Gyro_Init()
  *   ServiceTask_5ms()  里每个周期调一次 Gyro_Update()
- *   要角度 -> Gyro_GetAngle()；要清零 -> Gyro_ResetAngle()
+ *   要角度 -> Gyro_GetTotalAngle()；要清零 -> Gyro_ResetTotalAngle()
  *   模块不在时 Gyro_IsOk() 返回 0，直接退回编码器那套，不影响跑车
  * ========================================================================= */
 #define GYRO_BENCH_TEST   1        /* 1 = 台架模式显示陀螺仪; 0 = 显示原来的编码器标定 */
@@ -444,11 +444,11 @@ static void Task_SendTelemetry(void)
          * 为什么要看三个轴：手转 90° 时，只有和竖直轴对齐的那一个
          *   会从 160 左右冲到上万（90度/秒 × 131 = 11790），
          *   另外两个几乎不动。哪个动了，车里就用哪个轴算角度。 */
-        data.target_left  = (float)Gyro_GetWhoAmI();  /* I0 */
-        data.actual_left  = (float)Gyro_GetXraw();    /* I1 */
-        data.target_right = (float)Gyro_GetYraw();    /* I2 */
-        data.actual_right = (float)Gyro_GetZraw();    /* I3 */
-        data.error        = Gyro_GetAngle();          /* I4 */
+        data.target_left  = (float)Gyro_GetWhoAmIValue(); /* I0 */
+        data.actual_left  = (float)Gyro_GetAxisXRaw();    /* I1 */
+        data.target_right = (float)Gyro_GetAxisYRaw();    /* I2 */
+        data.actual_right = (float)Gyro_GetAxisZRaw();    /* I3 */
+        data.error        = Gyro_GetTotalAngle();         /* I4 */
         (void)Calib_Frozen;                          /* 这个模式下用不到，避免"设了没用"的警告 */
 #else
         data.target_left  = Calib_Left;              // ch1 左轮累计 counts

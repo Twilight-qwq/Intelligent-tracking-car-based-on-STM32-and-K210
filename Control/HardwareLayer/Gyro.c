@@ -2,21 +2,31 @@
 #include "Gyro.h"
 
 /* =========================================================================
- * 陀螺仪 ICM-20602（六轴，软件 I2C，PB0 = SCL，PB1 = SDA）
+ * 陀螺仪 ICM-20602（六轴，软件 I2C，SCL = PB0，SDA = PB1）
  *
  * 芯片确认：用户实际用的是 ICM-20602（不是 MPU6050）。
  *   和 MPU6050 的寄存器基本兼容（PWR_MGMT_1 / GYRO_CONFIG 地址一样），
- *   但有三处不同，见下面的 ICM_ 开头的注释。
+ *   但有三处不同，见下面 GYRO_CHIP_NOTE_ 开头的注释。
+ *
+ * 命名约定：本文件里没有单字母变量名。
+ *   寄存器地址一律以 GYRO_CHIP_REG_ 开头，芯片常量以 GYRO_CHIP_ 开头，
+ *   本模块的状态变量以 Gyro_ 开头，参数一律写全拼。
  * ========================================================================= */
 
-#define SI2C_PORT         GPIOB
-#define SI2C_SCL_PIN      GPIO_Pin_0
-#define SI2C_SDA_PIN      GPIO_Pin_1
+/* ==================== 引脚与地址 ==================== */
 
-#define MPU_ADDR          0x68     /* SAO/AD0 接地时是 0x68（悬空也可能是 0x68，建议直接接地） */
-#define MPU_REG_SMPLRT    0x19
-#define MPU_REG_CONFIG    0x1A
-#define MPU_REG_GYROCFG   0x1B
+#define SOFT_I2C_PORT               GPIOB
+#define SOFT_I2C_SCL_PIN            GPIO_Pin_0
+#define SOFT_I2C_SDA_PIN            GPIO_Pin_1
+
+/* SAO/AD0 接地时是 0x68（悬空也可能是 0x68，建议直接接地） */
+#define GYRO_CHIP_I2C_ADDRESS       0x68
+
+#define GYRO_CHIP_REG_SAMPLE_RATE   0x19
+#define GYRO_CHIP_REG_LOW_PASS      0x1A
+#define GYRO_CHIP_REG_GYRO_CONFIG   0x1B
+#define GYRO_CHIP_REG_POWER_MGMT    0x6B
+#define GYRO_CHIP_REG_WHO_AM_I      0x75
 
 /* 陀螺仪三轴数据从 0x43 开始，连续 6 个字节：
  *   0x43/0x44 = X 轴高/低字节    0x45/0x46 = Y 轴    0x47/0x48 = Z 轴
@@ -25,180 +35,302 @@
  * 2026-11-21 修正：原来这里写的是 0x43，那是【X 轴】不是 Z 轴。
  *   表现就是"手转 90° 角度几乎不动"（用户实测只变了 3 度）——
  *   因为模块平放时 X 轴感受不到绕竖直轴的转动。 */
-#define MPU_REG_GYRO_XYZ  0x43     /* 三轴起始地址：一次读 6 字节拿全 X/Y/Z */
-#define MPU_REG_PWRMGMT   0x6B
-#define MPU_REG_WHOAMI    0x75
+#define GYRO_CHIP_REG_AXIS_START    0x43
 
-/* ICM_ 第 1 处不同：WHO_AM_I 的返回值。
+/* GYRO_CHIP_NOTE_1：WHO_AM_I 的返回值。
  *   ICM-20602 = 0x12（18）
  *   MPU6050   = 0x68（104）
  * 两个都认，认到哪个都能用。 */
-#define GYRO_ID_ICM20602  0x12
-#define GYRO_ID_MPU6050   0x68
+#define GYRO_CHIP_ID_ICM20602       0x12
+#define GYRO_CHIP_ID_MPU6050        0x68
 
-#define GYRO_LSB_PER_DPS  131.0f   /* ±250°/s 档的分辨率，两者相同 */
-#define GYRO_DT_SEC       0.005f   /* 调用周期：5 毫秒 = 0.005 秒 */
-#define GYRO_BIAS_SAMPLES 200      /* 200 × 5 毫秒 = 1 秒，要求这 1 秒车是静止的 */
+/* GYRO_CHIP_NOTE_2：上电后要约 100 毫秒芯片才开始应答 I2C，
+ *                  不等这一下，第一次读会全军覆没（表现为"模块没接上"）。 */
+#define GYRO_CHIP_POWER_ON_WAIT_MS  100
+#define GYRO_CHIP_DETECT_RETRY      5
+#define GYRO_CHIP_DETECT_RETRY_MS   20
 
-static uint8_t  Gyro_WhoAmI   = 0;     /* 读回来的 0x75：ICM-20602 = 18，MPU6050 = 104 */
-static uint8_t  Gyro_Ok       = 0;     /* 1 = 模块活着 */
-static int16_t  Gyro_Xraw     = 0;     /* X 轴原始读数（台架诊断用） */
-static int16_t  Gyro_Yraw     = 0;     /* Y 轴原始读数（台架诊断用） */
-static int16_t  Gyro_Zraw     = 0;     /* Z 轴原始读数 = 竖直轴 */
-static float    Gyro_Bias     = 0.0f;  /* 静止零偏（Z 轴） */
-static float    Gyro_Angle    = 0.0f;  /* 累计角度（度） */
-static float    Gyro_BiasSum  = 0.0f;
-static uint16_t Gyro_BiasN    = 0;
-static uint8_t  Gyro_BiasDone = 0;
-static uint16_t Gyro_ErrCnt   = 0;
+/* GYRO_CHIP_NOTE_3：唤醒写 0x01 而不是 0x00。
+ *   0x00 = 唤醒，但时钟用内部 RC（会漂）
+ *   0x01 = 唤醒 + 时钟切到陀螺仪 PLL（ICM-20602 推荐这个）
+ * 如果读出来角速度一直是 0，把它改回 0x00 再试。 */
+#define GYRO_CHIP_POWER_ON_VALUE    0x01
+#define GYRO_CHIP_SAMPLE_RATE_DIV   0x04    /* 1kHz/(1+4) = 200Hz，和 5 毫秒对齐 */
+#define GYRO_CHIP_LOW_PASS_VALUE    0x03    /* 低通 44Hz */
+#define GYRO_CHIP_RANGE_250_VALUE   0x00    /* ±250 度/秒 */
 
-#define SCL_H()    GPIO_SetBits(SI2C_PORT,   SI2C_SCL_PIN)
-#define SCL_L()    GPIO_ResetBits(SI2C_PORT, SI2C_SCL_PIN)
-#define SDA_H()    GPIO_SetBits(SI2C_PORT,   SI2C_SDA_PIN)
-#define SDA_L()    GPIO_ResetBits(SI2C_PORT, SI2C_SDA_PIN)
-#define SDA_READ() GPIO_ReadInputDataBit(SI2C_PORT, SI2C_SDA_PIN)
+/* ±250 度/秒这一档：1 度/秒 = 131 个数字。两个芯片相同。 */
+#define GYRO_COUNTS_PER_DEGREE_PER_SECOND   131.0f
+
+/* 调用周期：5 毫秒 = 0.005 秒 */
+#define GYRO_SAMPLE_PERIOD_SECONDS          0.005f
+
+/* 200 × 5 毫秒 = 1 秒，要求这 1 秒车是静止的 */
+#define GYRO_ZERO_BIAS_SAMPLE_TARGET        200
+
+/* ==================== 本模块状态 ==================== */
+
+static uint8_t  Gyro_WhoAmIValue           = 0;      /* 0x75 读回来的身份号 */
+static uint8_t  Gyro_IsAvailable           = 0;      /* 1 = 芯片活着 */
+static int16_t  Gyro_AxisXRaw              = 0;      /* X 轴原始读数（台架诊断用） */
+static int16_t  Gyro_AxisYRaw              = 0;      /* Y 轴原始读数（台架诊断用） */
+static int16_t  Gyro_AxisZRaw              = 0;      /* Z 轴原始读数 = 竖直轴 */
+static float    Gyro_ZeroBias              = 0.0f;   /* 静止零偏（Z 轴） */
+static float    Gyro_TotalAngleDegrees     = 0.0f;   /* 累计角度（度） */
+static float    Gyro_ZeroBiasSum           = 0.0f;
+static uint16_t Gyro_ZeroBiasSampleCount   = 0;
+static uint8_t  Gyro_ZeroBiasReady         = 0;
+static uint16_t Gyro_ReadErrorCount        = 0;
+
+/* ==================== 软件 I2C 的引脚操作 ==================== */
+
+#define SOFT_I2C_SCL_HIGH()   GPIO_SetBits(SOFT_I2C_PORT,   SOFT_I2C_SCL_PIN)
+#define SOFT_I2C_SCL_LOW()    GPIO_ResetBits(SOFT_I2C_PORT, SOFT_I2C_SCL_PIN)
+#define SOFT_I2C_SDA_HIGH()   GPIO_SetBits(SOFT_I2C_PORT,   SOFT_I2C_SDA_PIN)
+#define SOFT_I2C_SDA_LOW()    GPIO_ResetBits(SOFT_I2C_PORT, SOFT_I2C_SDA_PIN)
+#define SOFT_I2C_SDA_READ()   GPIO_ReadInputDataBit(SOFT_I2C_PORT, SOFT_I2C_SDA_PIN)
 
 /* 位延时：72MHz 下大约 1 微秒，凑成 100kHz 左右 */
-static void I2C_Delay(void)
+static void SoftI2C_WaitOneBit(void)
 {
-	volatile uint8_t i;
-	for(i = 0; i < 25; i++) { }
+	volatile uint8_t delay_counter;
+
+	for (delay_counter = 0; delay_counter < 25; delay_counter++)
+	{
+	}
 }
 
-static void I2C_InitPins(void)
+static void SoftI2C_InitPins(void)
 {
-	GPIO_InitTypeDef g;
+	GPIO_InitTypeDef gpio_init_struct;
+
 	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB, ENABLE);
-	g.GPIO_Pin   = SI2C_SCL_PIN | SI2C_SDA_PIN;
-	g.GPIO_Mode  = GPIO_Mode_Out_OD;   /* 开漏：写 1 = 释放，靠模块上的上拉电阻拉高 */
-	g.GPIO_Speed = GPIO_Speed_50MHz;
-	GPIO_Init(SI2C_PORT, &g);
-	SCL_H();
-	SDA_H();
+
+	gpio_init_struct.GPIO_Pin   = SOFT_I2C_SCL_PIN | SOFT_I2C_SDA_PIN;
+	gpio_init_struct.GPIO_Mode  = GPIO_Mode_Out_OD;   /* 开漏：写 1 = 释放，靠模块上的上拉电阻拉高 */
+	gpio_init_struct.GPIO_Speed = GPIO_Speed_50MHz;
+	GPIO_Init(SOFT_I2C_PORT, &gpio_init_struct);
+
+	SOFT_I2C_SCL_HIGH();
+	SOFT_I2C_SDA_HIGH();
 }
 
-static void I2C_Start(void)
+static void SoftI2C_Start(void)
 {
-	SDA_H(); SCL_H(); I2C_Delay();
-	SDA_L(); I2C_Delay();
-	SCL_L(); I2C_Delay();
+	SOFT_I2C_SDA_HIGH();
+	SOFT_I2C_SCL_HIGH();
+	SoftI2C_WaitOneBit();
+
+	SOFT_I2C_SDA_LOW();
+	SoftI2C_WaitOneBit();
+
+	SOFT_I2C_SCL_LOW();
+	SoftI2C_WaitOneBit();
 }
 
-static void I2C_Stop(void)
+static void SoftI2C_Stop(void)
 {
-	SDA_L(); I2C_Delay();
-	SCL_H(); I2C_Delay();
-	SDA_H(); I2C_Delay();
+	SOFT_I2C_SDA_LOW();
+	SoftI2C_WaitOneBit();
+
+	SOFT_I2C_SCL_HIGH();
+	SoftI2C_WaitOneBit();
+
+	SOFT_I2C_SDA_HIGH();
+	SoftI2C_WaitOneBit();
 }
 
 /* 返回 1 = 收到应答，0 = 没应答（器件没接或坏了） */
-static uint8_t I2C_WriteByte(uint8_t b)
+static uint8_t SoftI2C_WriteByte(uint8_t write_byte)
 {
-	uint8_t i, ack;
-	for(i = 0; i < 8; i++)
+	uint8_t bit_index;
+	uint8_t acknowledge;
+
+	for (bit_index = 0; bit_index < 8; bit_index++)
 	{
-		if(b & 0x80) { SDA_H(); } else { SDA_L(); }
-		b <<= 1;
-		I2C_Delay();
-		SCL_H(); I2C_Delay();
-		SCL_L(); I2C_Delay();
+		if (write_byte & 0x80)
+		{
+			SOFT_I2C_SDA_HIGH();
+		}
+		else
+		{
+			SOFT_I2C_SDA_LOW();
+		}
+		write_byte <<= 1;
+
+		SoftI2C_WaitOneBit();
+		SOFT_I2C_SCL_HIGH();
+		SoftI2C_WaitOneBit();
+		SOFT_I2C_SCL_LOW();
+		SoftI2C_WaitOneBit();
 	}
-	SDA_H();                 /* 释放 SDA，等从机拉低表示应答 */
-	I2C_Delay();
-	SCL_H(); I2C_Delay();
-	ack = (SDA_READ() == 0) ? 1 : 0;
-	SCL_L(); I2C_Delay();
-	return ack;
+
+	/* 释放 SDA，等从机拉低表示应答 */
+	SOFT_I2C_SDA_HIGH();
+	SoftI2C_WaitOneBit();
+
+	SOFT_I2C_SCL_HIGH();
+	SoftI2C_WaitOneBit();
+	acknowledge = (SOFT_I2C_SDA_READ() == 0) ? 1 : 0;
+	SOFT_I2C_SCL_LOW();
+	SoftI2C_WaitOneBit();
+
+	return acknowledge;
 }
 
-static uint8_t I2C_ReadByte(uint8_t give_ack)
+static uint8_t SoftI2C_ReadByte(uint8_t send_acknowledge)
 {
-	uint8_t i, b = 0;
-	SDA_H();
-	for(i = 0; i < 8; i++)
+	uint8_t bit_index;
+	uint8_t received_byte = 0;
+
+	SOFT_I2C_SDA_HIGH();
+
+	for (bit_index = 0; bit_index < 8; bit_index++)
 	{
-		I2C_Delay();
-		SCL_H(); I2C_Delay();
-		b <<= 1;
-		if(SDA_READ()) { b |= 1; }
-		SCL_L(); I2C_Delay();
+		SoftI2C_WaitOneBit();
+		SOFT_I2C_SCL_HIGH();
+		SoftI2C_WaitOneBit();
+
+		received_byte <<= 1;
+		if (SOFT_I2C_SDA_READ())
+		{
+			received_byte |= 1;
+		}
+
+		SOFT_I2C_SCL_LOW();
+		SoftI2C_WaitOneBit();
 	}
-	if(give_ack) { SDA_L(); } else { SDA_H(); }
-	I2C_Delay();
-	SCL_H(); I2C_Delay();
-	SCL_L(); I2C_Delay();
-	SDA_H();
-	return b;
+
+	if (send_acknowledge)
+	{
+		SOFT_I2C_SDA_LOW();
+	}
+	else
+	{
+		SOFT_I2C_SDA_HIGH();
+	}
+	SoftI2C_WaitOneBit();
+
+	SOFT_I2C_SCL_HIGH();
+	SoftI2C_WaitOneBit();
+	SOFT_I2C_SCL_LOW();
+	SoftI2C_WaitOneBit();
+	SOFT_I2C_SDA_HIGH();
+
+	return received_byte;
 }
 
-static uint8_t MPU_WriteReg(uint8_t reg, uint8_t val)
+/* ==================== 芯片寄存器读写 ==================== */
+
+static uint8_t GyroChip_WriteRegister(uint8_t register_address, uint8_t register_value)
 {
-	I2C_Start();
-	if(!I2C_WriteByte((uint8_t)(MPU_ADDR << 1))) { I2C_Stop(); return 0; }
-	if(!I2C_WriteByte(reg))                      { I2C_Stop(); return 0; }
-	if(!I2C_WriteByte(val))                      { I2C_Stop(); return 0; }
-	I2C_Stop();
+	SoftI2C_Start();
+	if (!SoftI2C_WriteByte((uint8_t)(GYRO_CHIP_I2C_ADDRESS << 1)))
+	{
+		SoftI2C_Stop();
+		return 0;
+	}
+	if (!SoftI2C_WriteByte(register_address))
+	{
+		SoftI2C_Stop();
+		return 0;
+	}
+	if (!SoftI2C_WriteByte(register_value))
+	{
+		SoftI2C_Stop();
+		return 0;
+	}
+	SoftI2C_Stop();
+
 	return 1;
 }
 
-static uint8_t MPU_ReadRegs(uint8_t reg, uint8_t *buf, uint8_t n)
+static uint8_t GyroChip_ReadRegisters(uint8_t start_register, uint8_t *read_buffer, uint8_t read_count)
 {
-	uint8_t i;
-	I2C_Start();
-	if(!I2C_WriteByte((uint8_t)(MPU_ADDR << 1)))       { I2C_Stop(); return 0; }
-	if(!I2C_WriteByte(reg))                             { I2C_Stop(); return 0; }
-	I2C_Start();                                        /* 重复起始 */
-	if(!I2C_WriteByte((uint8_t)((MPU_ADDR << 1) | 1))) { I2C_Stop(); return 0; }
-	for(i = 0; i < n; i++)
+	uint8_t byte_index;
+
+	SoftI2C_Start();
+	if (!SoftI2C_WriteByte((uint8_t)(GYRO_CHIP_I2C_ADDRESS << 1)))
 	{
-		buf[i] = I2C_ReadByte((uint8_t)(i < (uint8_t)(n - 1)));
+		SoftI2C_Stop();
+		return 0;
 	}
-	I2C_Stop();
+	if (!SoftI2C_WriteByte(start_register))
+	{
+		SoftI2C_Stop();
+		return 0;
+	}
+
+	/* 重复起始 */
+	SoftI2C_Start();
+	if (!SoftI2C_WriteByte((uint8_t)((GYRO_CHIP_I2C_ADDRESS << 1) | 1)))
+	{
+		SoftI2C_Stop();
+		return 0;
+	}
+
+	for (byte_index = 0; byte_index < read_count; byte_index++)
+	{
+		/* 最后一个字节回"不应答"告诉从机别再发了，前面都回"应答" */
+		read_buffer[byte_index] = SoftI2C_ReadByte((uint8_t)(byte_index < (uint8_t)(read_count - 1)));
+	}
+
+	SoftI2C_Stop();
+
 	return 1;
 }
 
 /* 简单毫秒延时：72MHz 下大约 12000 次空循环 = 1 毫秒 */
-static void Gyro_DelayMs(uint16_t ms)
+static void Gyro_WaitMilliseconds(uint16_t delay_milliseconds)
 {
-	volatile uint32_t i;
-	uint32_t n = (uint32_t)ms * 12000u;
-	for(i = 0; i < n; i++) { }
+	volatile uint32_t loop_counter;
+	uint32_t total_loops;
+
+	total_loops = (uint32_t)delay_milliseconds * 12000u;
+
+	for (loop_counter = 0; loop_counter < total_loops; loop_counter++)
+	{
+	}
 }
 
-/* 只做三件事：确认模块活着、唤醒、配置量程。很快，不阻塞。 */
+/* ==================== 对外接口 ==================== */
+
+/* 只做三件事：确认芯片活着、唤醒、配置量程。很快，不阻塞。 */
 void Gyro_Init(void)
 {
-	uint8_t b = 0, try;
+	uint8_t who_am_i_value = 0;
+	uint8_t retry_times;
 
-	/* ICM_ 第 2 处不同：ICM-20602 上电后要约 100 毫秒才开始应答 I2C，
-	 * 不等这一下，第一次读会全军覆没（表现为"模块没接上"）。 */
-	Gyro_DelayMs(100);
+	Gyro_WaitMilliseconds(GYRO_CHIP_POWER_ON_WAIT_MS);
+	SoftI2C_InitPins();
 
-	I2C_InitPins();
-	for(try = 0; try < 5; try++)
+	for (retry_times = 0; retry_times < GYRO_CHIP_DETECT_RETRY; retry_times++)
 	{
-		if(MPU_ReadRegs(MPU_REG_WHOAMI, &b, 1))
+		if (GyroChip_ReadRegisters(GYRO_CHIP_REG_WHO_AM_I, &who_am_i_value, 1))
 		{
-			if((b == GYRO_ID_ICM20602) || (b == GYRO_ID_MPU6050))
+			if ((who_am_i_value == GYRO_CHIP_ID_ICM20602) || (who_am_i_value == GYRO_CHIP_ID_MPU6050))
 			{
-				Gyro_Ok = 1;
+				Gyro_IsAvailable = 1;
 				break;
 			}
 		}
-		Gyro_DelayMs(20);          /* 没认出来就等 20 毫秒再试，最多 5 次 */
-	}
-	Gyro_WhoAmI = b;
-	if(!Gyro_Ok) { return; }       /* 模块不在，后面全部跳过，不影响跑车 */
 
-	/* ICM_ 第 3 处不同：写 0x01 而不是 0x00。
-	 *   0x00 = 唤醒，但时钟用内部 RC（会漂）
-	 *   0x01 = 唤醒 + 时钟切到陀螺仪 PLL（ICM-20602 推荐这个）
-	 * 如果读出来角速度一直是 0，把它改回 0x00 再试。 */
-	MPU_WriteReg(MPU_REG_PWRMGMT, 0x01);
-	Gyro_DelayMs(10);
-	MPU_WriteReg(MPU_REG_SMPLRT,  0x04);/* 采样率 1kHz/(1+4) = 200Hz，和 5 毫秒对齐 */
-	MPU_WriteReg(MPU_REG_CONFIG,  0x03);/* 低通 44Hz */
-	MPU_WriteReg(MPU_REG_GYROCFG, 0x00);/* ±250°/s */
+		/* 没认出来就等一会儿再试 */
+		Gyro_WaitMilliseconds(GYRO_CHIP_DETECT_RETRY_MS);
+	}
+
+	Gyro_WhoAmIValue = who_am_i_value;
+
+	if (!Gyro_IsAvailable)
+	{
+		return;                      /* 芯片不在，后面全部跳过，不影响跑车 */
+	}
+
+	GyroChip_WriteRegister(GYRO_CHIP_REG_POWER_MGMT,  GYRO_CHIP_POWER_ON_VALUE);
+	Gyro_WaitMilliseconds(10);
+	GyroChip_WriteRegister(GYRO_CHIP_REG_SAMPLE_RATE, GYRO_CHIP_SAMPLE_RATE_DIV);
+	GyroChip_WriteRegister(GYRO_CHIP_REG_LOW_PASS,    GYRO_CHIP_LOW_PASS_VALUE);
+	GyroChip_WriteRegister(GYRO_CHIP_REG_GYRO_CONFIG, GYRO_CHIP_RANGE_250_VALUE);
 }
 
 /* 每 5 毫秒调一次：前 1 秒测零偏，之后按 Z 轴积分
@@ -206,81 +338,93 @@ void Gyro_Init(void)
  * 就落在 X 或 Y 上，只读 Z 会永远是 0（2026-11-21 踩过这个坑）。 */
 void Gyro_Update(void)
 {
-	uint8_t buf[6];
-	int16_t x, y, z;
+	uint8_t axis_raw_bytes[6];
+	int16_t axis_x_raw;
+	int16_t axis_y_raw;
+	int16_t axis_z_raw;
 
-	if(!Gyro_Ok) { return; }
-
-	if(!MPU_ReadRegs(MPU_REG_GYRO_XYZ, buf, 6))
+	if (!Gyro_IsAvailable)
 	{
-		if(Gyro_ErrCnt < 60000) { Gyro_ErrCnt++; }
 		return;
 	}
-	x = (int16_t)(((uint16_t)buf[0] << 8) | buf[1]);   /* 0x43/0x44 = X 轴 */
-	y = (int16_t)(((uint16_t)buf[2] << 8) | buf[3]);   /* 0x45/0x46 = Y 轴 */
-	z = (int16_t)(((uint16_t)buf[4] << 8) | buf[5]);   /* 0x47/0x48 = Z 轴 */
-	Gyro_Xraw = x;
-	Gyro_Yraw = y;
-	Gyro_Zraw = z;
 
-	if(!Gyro_BiasDone)
+	if (!GyroChip_ReadRegisters(GYRO_CHIP_REG_AXIS_START, axis_raw_bytes, 6))
 	{
-		Gyro_BiasSum += (float)z;
-		Gyro_BiasN++;
-		if(Gyro_BiasN >= GYRO_BIAS_SAMPLES)
+		if (Gyro_ReadErrorCount < 60000)
 		{
-			Gyro_Bias     = Gyro_BiasSum / (float)Gyro_BiasN;
-			Gyro_BiasDone = 1;
+			Gyro_ReadErrorCount++;
 		}
 		return;
 	}
 
-	Gyro_Angle += ((float)z - Gyro_Bias) / GYRO_LSB_PER_DPS * GYRO_DT_SEC;
-}
+	axis_x_raw = (int16_t)(((uint16_t)axis_raw_bytes[0] << 8) | axis_raw_bytes[1]);  /* 0x43/0x44 = X 轴 */
+	axis_y_raw = (int16_t)(((uint16_t)axis_raw_bytes[2] << 8) | axis_raw_bytes[3]);  /* 0x45/0x46 = Y 轴 */
+	axis_z_raw = (int16_t)(((uint16_t)axis_raw_bytes[4] << 8) | axis_raw_bytes[5]);  /* 0x47/0x48 = Z 轴 */
 
-/* ==================== 给上层读的接口 ==================== */
+	Gyro_AxisXRaw = axis_x_raw;
+	Gyro_AxisYRaw = axis_y_raw;
+	Gyro_AxisZRaw = axis_z_raw;
+
+	if (!Gyro_ZeroBiasReady)
+	{
+		Gyro_ZeroBiasSum += (float)axis_z_raw;
+		Gyro_ZeroBiasSampleCount++;
+
+		if (Gyro_ZeroBiasSampleCount >= GYRO_ZERO_BIAS_SAMPLE_TARGET)
+		{
+			Gyro_ZeroBias      = Gyro_ZeroBiasSum / (float)Gyro_ZeroBiasSampleCount;
+			Gyro_ZeroBiasReady = 1;
+		}
+
+		return;
+	}
+
+	Gyro_TotalAngleDegrees += ((float)axis_z_raw - Gyro_ZeroBias)
+	                          / GYRO_COUNTS_PER_DEGREE_PER_SECOND
+	                          * GYRO_SAMPLE_PERIOD_SECONDS;
+}
 
 uint8_t Gyro_IsOk(void)
 {
-	return Gyro_Ok;
+	return Gyro_IsAvailable;
 }
 
-uint8_t Gyro_GetWhoAmI(void)
+uint8_t Gyro_GetWhoAmIValue(void)
 {
-	return Gyro_WhoAmI;
+	return Gyro_WhoAmIValue;
 }
 
-int16_t Gyro_GetXraw(void)
+int16_t Gyro_GetAxisXRaw(void)
 {
-	return Gyro_Xraw;
+	return Gyro_AxisXRaw;
 }
 
-int16_t Gyro_GetYraw(void)
+int16_t Gyro_GetAxisYRaw(void)
 {
-	return Gyro_Yraw;
+	return Gyro_AxisYRaw;
 }
 
-int16_t Gyro_GetZraw(void)
+int16_t Gyro_GetAxisZRaw(void)
 {
-	return Gyro_Zraw;
+	return Gyro_AxisZRaw;
 }
 
-float Gyro_GetBias(void)
+float Gyro_GetZeroBias(void)
 {
-	return Gyro_Bias;
+	return Gyro_ZeroBias;
 }
 
-float Gyro_GetAngle(void)
+float Gyro_GetTotalAngle(void)
 {
-	return Gyro_Angle;
+	return Gyro_TotalAngleDegrees;
 }
 
-void Gyro_ResetAngle(void)
+void Gyro_ResetTotalAngle(void)
 {
-	Gyro_Angle = 0.0f;
+	Gyro_TotalAngleDegrees = 0.0f;
 }
 
-uint16_t Gyro_GetErrCnt(void)
+uint16_t Gyro_GetReadErrorCount(void)
 {
-	return Gyro_ErrCnt;
+	return Gyro_ReadErrorCount;
 }

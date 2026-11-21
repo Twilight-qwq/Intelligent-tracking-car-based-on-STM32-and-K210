@@ -18,15 +18,15 @@
  *   零偏校准后 0.1°/秒，0.4 秒只漂 0.04°，远小于 5° 的容差。
  *   每过一个弯就把角度清零，不累积。
  *
- * 实测（2026-11-21）：实测 I3(Z 轴) 读数最大 → 模块平放，Z 是竖直轴。
+ * 实测（2026-11-21）：Z 轴读数在转车时冲得最大 → 模块平放，Z 是竖直轴。
  *   手转 90°：顺时针 = −90，逆时针 = +90。
  * ========================================================================= */
 
 void Gyro_Init(void);
-/* 功能：确认模块活着、唤醒、配置量程
+/* 功能：确认芯片活着、唤醒、配置量程
  * 参数：无
  * 返回：无
- * 说明：模块不在时 Gyro_Ok 保持 0，后面所有函数自动跳过，不影响跑车
+ * 说明：芯片不在时 Gyro_IsAvailable 保持 0，后面所有函数自动跳过，不影响跑车
  */
 
 void Gyro_Update(void);
@@ -37,47 +37,51 @@ void Gyro_Update(void);
  */
 
 uint8_t Gyro_IsOk(void);
-/* 功能：模块到底认到没有
+/* 功能：芯片到底认到没有
  * 参数：无
- * 返回：1 = 模块活着；0 = 不在（此时角度恒为 0，上层必须退回编码器方案）
+ * 返回：1 = 芯片活着；0 = 不在（此时角度恒为 0，上层必须退回编码器方案）
+ * 说明：函数名里的 Ok 就是"可用"，返回 0 时其余读角度的接口全部返回 0
  */
 
-uint8_t Gyro_GetWhoAmI(void);
+uint8_t Gyro_GetWhoAmIValue(void);
 /* 功能：读回来的身份号
  * 参数：无
  * 返回：ICM-20602 = 18(0x12)；MPU6050 = 104(0x68)；0 或 255 = 没接上
+ * 示例：台架模式下正常显示 18
  */
 
-int16_t Gyro_GetXraw(void);
-int16_t Gyro_GetYraw(void);
-int16_t Gyro_GetZraw(void);
+int16_t Gyro_GetAxisXRaw(void);
+int16_t Gyro_GetAxisYRaw(void);
+int16_t Gyro_GetAxisZRaw(void);
 /* 功能：三轴原始读数（台架诊断用）
  * 参数：无
  * 返回：原始数字，不是度。静止时在一个固定值（零偏）附近小幅抖
  * 说明：竖直轴是哪一根，手转一下看哪个数冲得最大就知道了
  */
 
-float Gyro_GetBias(void);
+float Gyro_GetZeroBias(void);
 /* 功能：零偏（上电后第 1 秒 200 个点的平均值）
  * 参数：无
  * 返回：Z 轴静止时的原始读数平均值
+ * 示例：160 左右，除以 131 就是 1.22 度/秒，很小
  */
 
-float Gyro_GetAngle(void);
+float Gyro_GetTotalAngle(void);
 /* 功能：累计角度
  * 参数：无
- * 返回：从 Gyro_ResetAngle() 起到现在的转角，单位：度
+ * 返回：从 Gyro_ResetTotalAngle() 到现在的转角，单位：度
  * 说明：逆时针（俯视）为正，顺时针为负
+ * 示例：顺时针转 90° 返回 −90
  */
 
-void Gyro_ResetAngle(void);
+void Gyro_ResetTotalAngle(void);
 /* 功能：把累计角度清零
  * 参数：无
  * 返回：无
  * 说明：每个弯开始转弯的那一刻调用，这样角度不跨弯累积
  */
 
-uint16_t Gyro_GetErrCnt(void);
+uint16_t Gyro_GetReadErrorCount(void);
 /* 功能：读失败次数
  * 参数：无
  * 返回：累计读失败的次数，应该一直是 0；在涨说明接线松了
