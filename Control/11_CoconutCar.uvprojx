@@ -340,7 +340,7 @@
               <MiscControls>--no-multibyte-chars</MiscControls>
               <Define>USE_STDPERIPH_DRIVER,STM32F10X_MD</Define>
               <Undefine></Undefine>
-              <IncludePath>.\Start;.\Library;.\User;.\HardwareLayer;.\SystemLayer;.\MiddleLayer;.\AlgorithmLayer;.\AppLayer;.\DebugLayer</IncludePath>
+              <IncludePath>.\Start;.\Library;.\User;.\APP\Inc;.\MID\Inc;.\BSP\Inc;.\DebugLayer</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -677,167 +677,157 @@
           </Files>
         </Group>
         <Group>
-          <GroupName>MiddleLayer</GroupName>
-          <Files>
-            <File>
-              <FileName>Protocol.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\MiddleLayer\Protocol.c</FilePath>
-            </File>
-            <File>
-              <FileName>Protocol.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>.\MiddleLayer\Protocol.h</FilePath>
-            </File>
-            <File>
-              <FileName>Delay.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\MiddleLayer\Delay.c</FilePath>
-            </File>
-            <File>
-              <FileName>Delay.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>.\MiddleLayer\Delay.h</FilePath>
-            </File>
-          </Files>
-        </Group>
-        <Group>
-          <GroupName>AppLayer</GroupName>
+          <GroupName>APP</GroupName>
           <Files>
             <File>
               <FileName>Service.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\AppLayer\Service.c</FilePath>
+              <FilePath>.\APP\Src\Service.c</FilePath>
             </File>
             <File>
               <FileName>Service.h</FileName>
               <FileType>5</FileType>
-              <FilePath>.\AppLayer\Service.h</FilePath>
+              <FilePath>.\APP\Inc\Service.h</FilePath>
             </File>
           </Files>
         </Group>
         <Group>
-          <GroupName>HardwareLayer</GroupName>
+          <GroupName>MID</GroupName>
           <Files>
             <File>
-              <FileName>BlueTooth.c</FileName>
+              <FileName>Protocol.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\HardwareLayer\BlueTooth.c</FilePath>
+              <FilePath>.\MID\Src\Protocol.c</FilePath>
             </File>
             <File>
-              <FileName>BlueTooth.h</FileName>
+              <FileName>Protocol.h</FileName>
               <FileType>5</FileType>
-              <FilePath>.\HardwareLayer\BlueTooth.h</FilePath>
+              <FilePath>.\MID\Inc\Protocol.h</FilePath>
             </File>
             <File>
-              <FileName>Encoder.c</FileName>
+              <FileName>Delay.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\HardwareLayer\Encoder.c</FilePath>
+              <FilePath>.\MID\Src\Delay.c</FilePath>
             </File>
             <File>
-              <FileName>Encoder.h</FileName>
+              <FileName>Delay.h</FileName>
               <FileType>5</FileType>
-              <FilePath>.\HardwareLayer\Encoder.h</FilePath>
+              <FilePath>.\MID\Inc\Delay.h</FilePath>
             </File>
-            <File>
-              <FileName>Key.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\HardwareLayer\Key.c</FilePath>
-            </File>
-            <File>
-              <FileName>Key.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>.\HardwareLayer\Key.h</FilePath>
-            </File>
-            <File>
-              <FileName>Motor.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\HardwareLayer\Motor.c</FilePath>
-            </File>
-            <File>
-              <FileName>Motor.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>.\HardwareLayer\Motor.h</FilePath>
-            </File>
-            <File>
-              <FileName>ReceiverK210.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\HardwareLayer\ReceiverK210.c</FilePath>
-            </File>
-            <File>
-              <FileName>ReceiverK210.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>.\HardwareLayer\ReceiverK210.h</FilePath>
-            </File>
-            <File>
-              <FileName>Voice.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\HardwareLayer\Voice.c</FilePath>
-            </File>
-            <File>
-              <FileName>Voice.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>.\HardwareLayer\Voice.h</FilePath>
-            </File>
-            <File>
-              <FileName>WatchDog.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\HardwareLayer\WatchDog.c</FilePath>
-            </File>
-            <File>
-              <FileName>WatchDog.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>.\HardwareLayer\WatchDog.h</FilePath>
-            </File>
-            <File>
-              <FileName>IndicatorLED.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\HardwareLayer\IndicatorLED.c</FilePath>
-            </File>
-            <File>
-              <FileName>IndicatorLED.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>.\HardwareLayer\IndicatorLED.h</FilePath>
-            </File>
-            <File>
-              <FileName>Gyro.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\HardwareLayer\Gyro.c</FilePath>
-            </File>
-            <File>
-              <FileName>Gyro.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>.\HardwareLayer\Gyro.h</FilePath>
-            </File>
-          </Files>
-        </Group>
-        <Group>
-          <GroupName>AlgorithmLayer</GroupName>
-          <Files>
             <File>
               <FileName>PID.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\AlgorithmLayer\PID.c</FilePath>
+              <FilePath>.\MID\Src\PID.c</FilePath>
             </File>
             <File>
               <FileName>PID.h</FileName>
               <FileType>5</FileType>
-              <FilePath>.\AlgorithmLayer\PID.h</FilePath>
+              <FilePath>.\MID\Inc\PID.h</FilePath>
             </File>
           </Files>
         </Group>
         <Group>
-          <GroupName>SystemLayer</GroupName>
+          <GroupName>BSP</GroupName>
           <Files>
+            <File>
+              <FileName>BlueTooth.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\BSP\Src\BlueTooth.c</FilePath>
+            </File>
+            <File>
+              <FileName>BlueTooth.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\BSP\Inc\BlueTooth.h</FilePath>
+            </File>
+            <File>
+              <FileName>Encoder.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\BSP\Src\Encoder.c</FilePath>
+            </File>
+            <File>
+              <FileName>Encoder.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\BSP\Inc\Encoder.h</FilePath>
+            </File>
+            <File>
+              <FileName>Gyro.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\BSP\Src\Gyro.c</FilePath>
+            </File>
+            <File>
+              <FileName>Gyro.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\BSP\Inc\Gyro.h</FilePath>
+            </File>
+            <File>
+              <FileName>IndicatorLED.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\BSP\Src\IndicatorLED.c</FilePath>
+            </File>
+            <File>
+              <FileName>IndicatorLED.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\BSP\Inc\IndicatorLED.h</FilePath>
+            </File>
+            <File>
+              <FileName>Key.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\BSP\Src\Key.c</FilePath>
+            </File>
+            <File>
+              <FileName>Key.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\BSP\Inc\Key.h</FilePath>
+            </File>
+            <File>
+              <FileName>Motor.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\BSP\Src\Motor.c</FilePath>
+            </File>
+            <File>
+              <FileName>Motor.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\BSP\Inc\Motor.h</FilePath>
+            </File>
+            <File>
+              <FileName>ReceiverK210.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\BSP\Src\ReceiverK210.c</FilePath>
+            </File>
+            <File>
+              <FileName>ReceiverK210.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\BSP\Inc\ReceiverK210.h</FilePath>
+            </File>
             <File>
               <FileName>SysTimer.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\SystemLayer\SysTimer.c</FilePath>
+              <FilePath>.\BSP\Src\SysTimer.c</FilePath>
             </File>
             <File>
               <FileName>SysTimer.h</FileName>
               <FileType>5</FileType>
-              <FilePath>.\SystemLayer\SysTimer.h</FilePath>
+              <FilePath>.\BSP\Inc\SysTimer.h</FilePath>
+            </File>
+            <File>
+              <FileName>Voice.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\BSP\Src\Voice.c</FilePath>
+            </File>
+            <File>
+              <FileName>Voice.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\BSP\Inc\Voice.h</FilePath>
+            </File>
+            <File>
+              <FileName>WatchDog.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\BSP\Src\WatchDog.c</FilePath>
+            </File>
+            <File>
+              <FileName>WatchDog.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\BSP\Inc\WatchDog.h</FilePath>
             </File>
           </Files>
         </Group>
