@@ -1,4 +1,4 @@
-﻿#ifndef __SERVICE_H
+#ifndef __SERVICE_H
 #define __SERVICE_H
 
 #include "Encoder.h"
@@ -13,6 +13,7 @@
 #include "Debug.h"
 #include "WatchDog.h"
 #include "IndicatorLED.h"
+#include "Gyro.h"
 
 void Service_Init(void);					//初始化
 void ServiceTask_Idle(void);				//喂狗

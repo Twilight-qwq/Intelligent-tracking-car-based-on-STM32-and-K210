@@ -789,6 +789,16 @@
               <FileType>5</FileType>
               <FilePath>.\HardwareLayer\IndicatorLED.h</FilePath>
             </File>
+            <File>
+              <FileName>Gyro.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\HardwareLayer\Gyro.c</FilePath>
+            </File>
+            <File>
+              <FileName>Gyro.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\HardwareLayer\Gyro.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
