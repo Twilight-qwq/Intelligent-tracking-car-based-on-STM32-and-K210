@@ -57,13 +57,31 @@
 #define GYRO_CHIP_POWER_ON_VALUE    0x01
 #define GYRO_CHIP_SAMPLE_RATE_DIV   0x04    /* 1kHz/(1+4) = 200Hz，和 5 毫秒对齐 */
 #define GYRO_CHIP_LOW_PASS_VALUE    0x03    /* 低通 44Hz */
-#define GYRO_CHIP_RANGE_250_VALUE   0x00    /* ±250 度/秒 */
 
-/* ±250 度/秒这一档：1 度/秒 = 131 个数字。两个芯片相同。 */
-#define GYRO_COUNTS_PER_DEGREE_PER_SECOND   131.0f
+/* 量程 ±500 度/秒这一档：1 度/秒 = 65.5 个数字。
+ * 为什么不用 ±250：上车转 90° 平均 240 度/秒，±250 只剩 4% 余量，
+ *   加速段会削顶，读数被削平后陀螺仪会以为只转了 70 度。
+ * 出处：本地手册 RM-MPU-6000A 第 2413~2421 行的 FS_SEL 表
+ *       （FS_SEL=1 → ±500 度/秒 → 65.5 LSB/(度/秒)）；
+ *       FS_SEL 是 GYRO_CONFIG(0x1B) 的 bit4~3，写 0x08 就是 FS_SEL=1。 */
+#define GYRO_CHIP_RANGE_500_VALUE           0x08
+#define GYRO_COUNTS_PER_DEGREE_PER_SECOND   65.5f
 
 /* 调用周期：5 毫秒 = 0.005 秒 */
 #define GYRO_SAMPLE_PERIOD_SECONDS          0.005f
+
+/* 死区：转速绝对值小于这个数，就当"没在转"，不往角度里加。
+ * 为什么需要：零偏切得不干净时，静止也会以 0.476 度/秒慢慢往上爬
+ *   （用户实测：21 秒加了 10 度，10/21 = 0.476 度/秒）。
+ * 为什么定 1.0：转弯真转速是 240 度/秒，差 240 倍，绝不可能把真转弯判成没转；
+ *   代价只是转弯刚开始、转速还没升上来那一下不计，实测丢不到 0.02 度。 */
+#define GYRO_RATE_DEADBAND_DPS              1.0f
+
+/* 上电后要扔掉的开头：芯片刚醒的头几十毫秒读数是乱的，
+ * 混进零偏会把零偏整体拉偏（这就是那 0.476 度/秒的来源）。
+ * 先等 50 毫秒，再丢掉 40 个样本（40 × 5 毫秒 = 200 毫秒），之后才开始采零偏。 */
+#define GYRO_CHIP_STARTUP_WAIT_MS           50
+#define GYRO_BIAS_SKIP_SAMPLES              40
 
 /* 200 × 5 毫秒 = 1 秒，要求这 1 秒车是静止的 */
 #define GYRO_ZERO_BIAS_SAMPLE_TARGET        200
@@ -80,6 +98,7 @@ static float    Gyro_TotalAngleDegrees     = 0.0f;   /* 累计角度（度） */
 static float    Gyro_ZeroBiasSum           = 0.0f;
 static uint16_t Gyro_ZeroBiasSampleCount   = 0;
 static uint8_t  Gyro_ZeroBiasReady         = 0;
+static uint8_t  Gyro_BiasSkipCount         = 0;      /* 还要丢掉多少个上电初期的样本 */
 static uint16_t Gyro_ReadErrorCount        = 0;
 
 /* ==================== 软件 I2C 的引脚操作 ==================== */
@@ -330,7 +349,12 @@ void Gyro_Init(void)
 	Gyro_WaitMilliseconds(10);
 	GyroChip_WriteRegister(GYRO_CHIP_REG_SAMPLE_RATE, GYRO_CHIP_SAMPLE_RATE_DIV);
 	GyroChip_WriteRegister(GYRO_CHIP_REG_LOW_PASS,    GYRO_CHIP_LOW_PASS_VALUE);
-	GyroChip_WriteRegister(GYRO_CHIP_REG_GYRO_CONFIG, GYRO_CHIP_RANGE_250_VALUE);
+	GyroChip_WriteRegister(GYRO_CHIP_REG_GYRO_CONFIG, GYRO_CHIP_RANGE_500_VALUE);
+
+	/* 配置完再等一会儿，让芯片彻底稳下来，才开始采零偏 */
+	Gyro_WaitMilliseconds(GYRO_CHIP_STARTUP_WAIT_MS);
+
+	Gyro_BiasSkipCount = GYRO_BIAS_SKIP_SAMPLES;
 }
 
 /* 每 5 毫秒调一次：前 1 秒测零偏，之后按 Z 轴积分
@@ -342,6 +366,7 @@ void Gyro_Update(void)
 	int16_t axis_x_raw;
 	int16_t axis_y_raw;
 	int16_t axis_z_raw;
+	float   rate_degrees_per_second;
 
 	if (!Gyro_IsAvailable)
 	{
@@ -367,6 +392,13 @@ void Gyro_Update(void)
 
 	if (!Gyro_ZeroBiasReady)
 	{
+		/* 上电初期这几个样本先扔掉，不参与零偏 */
+		if (Gyro_BiasSkipCount > 0)
+		{
+			Gyro_BiasSkipCount--;
+			return;
+		}
+
 		Gyro_ZeroBiasSum += (float)axis_z_raw;
 		Gyro_ZeroBiasSampleCount++;
 
@@ -379,9 +411,15 @@ void Gyro_Update(void)
 		return;
 	}
 
-	Gyro_TotalAngleDegrees += ((float)axis_z_raw - Gyro_ZeroBias)
-	                          / GYRO_COUNTS_PER_DEGREE_PER_SECOND
-	                          * GYRO_SAMPLE_PERIOD_SECONDS;
+	rate_degrees_per_second = ((float)axis_z_raw - Gyro_ZeroBias)
+	                          / GYRO_COUNTS_PER_DEGREE_PER_SECOND;
+
+	/* 死区：小于 1 度/秒当作没转，这样静止时角度不会慢慢往上爬 */
+	if ((rate_degrees_per_second > GYRO_RATE_DEADBAND_DPS)
+	    || (rate_degrees_per_second < -GYRO_RATE_DEADBAND_DPS))
+	{
+		Gyro_TotalAngleDegrees += rate_degrees_per_second * GYRO_SAMPLE_PERIOD_SECONDS;
+	}
 }
 
 uint8_t Gyro_IsOk(void)
