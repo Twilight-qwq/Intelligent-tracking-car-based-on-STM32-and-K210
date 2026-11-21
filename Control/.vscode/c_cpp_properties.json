@@ -6,14 +6,15 @@
                 "e:\\Development\\STM32\\Projects\\STM32Project\\stm32f103\\11_CoconutCar\\Control\\Start",
                 "e:\\Development\\STM32\\Projects\\STM32Project\\stm32f103\\11_CoconutCar\\Control\\Library",
                 "e:\\Development\\STM32\\Projects\\STM32Project\\stm32f103\\11_CoconutCar\\Control\\User",
-                "e:\\Development\\STM32\\Projects\\STM32Project\\stm32f103\\11_CoconutCar\\Control\\HardwareLayer",
-                "e:\\Development\\STM32\\Projects\\STM32Project\\stm32f103\\11_CoconutCar\\Control\\SystemLayer",
-                "e:\\Development\\STM32\\Projects\\STM32Project\\stm32f103\\11_CoconutCar\\Control\\MiddleLayer",
-                "e:\\Development\\STM32\\Projects\\STM32Project\\stm32f103\\11_CoconutCar\\Control\\AlgorithmLayer",
-                "e:\\Development\\STM32\\Projects\\STM32Project\\stm32f103\\11_CoconutCar\\Control\\AppLayer",
+                "e:\\Development\\STM32\\Projects\\STM32Project\\stm32f103\\11_CoconutCar\\Control\\APP\\Inc",
+                "e:\\Development\\STM32\\Projects\\STM32Project\\stm32f103\\11_CoconutCar\\Control\\MID\\Inc",
+                "e:\\Development\\STM32\\Projects\\STM32Project\\stm32f103\\11_CoconutCar\\Control\\BSP\\Inc",
                 "e:\\Development\\STM32\\Projects\\STM32Project\\stm32f103\\11_CoconutCar\\Control\\DebugLayer",
                 "E:\\Keil_v5\\ARM\\ARMCC\\include",
-                "E:\\Keil_v5\\ARM\\ARMCC\\include\\rw"
+                "E:\\Keil_v5\\ARM\\ARMCC\\include\\rw",
+                "e:\\Development\\STM32\\Projects\\STM32Project\\stm32f103\\11_CoconutCar\\Control\\APP\\Src",
+                "e:\\Development\\STM32\\Projects\\STM32Project\\stm32f103\\11_CoconutCar\\Control\\MID\\Src",
+                "e:\\Development\\STM32\\Projects\\STM32Project\\stm32f103\\11_CoconutCar\\Control\\BSP\\Src"
             ],
             "defines": [
                 "USE_STDPERIPH_DRIVER",
