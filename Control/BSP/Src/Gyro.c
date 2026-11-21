@@ -107,13 +107,24 @@ static uint8_t  Gyro_IsAvailable           = 0;      /* 1 = 芯片活着 */
 static int16_t  Gyro_AxisXRaw              = 0;      /* X 轴原始读数（台架诊断用） */
 static int16_t  Gyro_AxisYRaw              = 0;      /* Y 轴原始读数（台架诊断用） */
 static int16_t  Gyro_AxisZRaw              = 0;      /* Z 轴原始读数 = 竖直轴 */
-static float    Gyro_ZeroBias              = 0.0f;   /* 静止零偏（Z 轴） */
-static float    Gyro_TotalAngleDegrees     = 0.0f;   /* 累计角度（度） */
-static float    Gyro_ZeroBiasSum           = 0.0f;
-static uint16_t Gyro_ZeroBiasSampleCount   = 0;
-static uint8_t  Gyro_ZeroBiasReady         = 0;
-static uint8_t  Gyro_BiasSkipCount         = 0;      /* 还要丢掉多少个上电初期的样本 */
-static uint16_t Gyro_ReadErrorCount        = 0;
+static float    Gyro_ZeroBias              = 0.0f;   /* 静止零偏（Z 轴原始读数的平均值）。
+                                                       * 车静止时陀螺仪读数不是 0，而是一个固定的小偏置；
+                                                       * 每次算转速都要先减掉它，否则静止也会慢慢积分出角度。 */
+static float    Gyro_TotalAngleDegrees     = 0.0f;   /* 累计角度（度）：从上次清零到现在一共转了多少度。
+                                                       * 右转为负、左转为正（芯片的符号约定，用的时候取绝对值）。
+                                                       * 转弯「转够了没有」就是靠它判断。 */
+static float    Gyro_ZeroBiasSum           = 0.0f;   /* 测零偏期间的累加和：先把 200 个样本的值加起来，
+                                                       * 采够之后除以样本个数，才是平均值 Gyro_ZeroBias。 */
+static uint16_t Gyro_ZeroBiasSampleCount   = 0;      /* 零偏已经采了几个样本，到 200 就停。
+                                                       * 200 × 5 毫秒 = 1 秒，要求这 1 秒里车是静止的。 */
+static uint8_t  Gyro_ZeroBiasReady         = 0;      /* 1 = 零偏已经测完，可以正常积分角度了；
+                                                       * 0 = 还在测零偏，这期间 Gyro_TotalAngleDegrees 一直不动。 */
+static uint8_t  Gyro_BiasSkipCount         = 0;      /* 还要丢掉多少个上电初期的样本。
+                                                       * 芯片刚醒的头几十毫秒读数是乱的，混进零偏会把平均值带偏。
+                                                       * 从 40 开始往下倒数，减到 0 才开始真正采零偏。 */
+static uint16_t Gyro_ReadErrorCount        = 0;      /* I2C 读失败的总次数，只增不减，封顶 60000 防止溢出。
+                                                       * 纯诊断用：台架上看它一直涨，说明接线或模块有问题。
+                                                       * 跑车逻辑不依赖它。 */
 static uint32_t Gyro_LastUpdateMs          = 0;      /* 上次调用 Gyro_Update 的时刻 */
 static uint8_t  Gyro_DtReady               = 0;      /* 1 = 已经记过时刻，可以算真实间隔了 */
 static uint16_t Gyro_ConsecutiveFailCount  = 0;      /* 连续读失败次数，成功一次就清零 */
@@ -132,6 +143,9 @@ static uint16_t Gyro_ConsecutiveFailCount  = 0;      /* 连续读失败次数，
 /* 位延时：72MHz 下大约 1 微秒，凑成 100kHz 左右 */
 static void SoftI2C_WaitOneBit(void)
 {
+	/* delay_counter：空转计数用的临时变量。
+	 * 为什么必须加 volatile：不加的话编译器一看"这个循环什么也没干"，
+	 *   会把它整个优化掉，延时直接变成 0，I2C 时序就乱了。 */
 	volatile uint8_t delay_counter;
 
 	for (delay_counter = 0; delay_counter < 25; delay_counter++)
@@ -182,8 +196,10 @@ static void SoftI2C_Stop(void)
 /* 返回 1 = 收到应答，0 = 没应答（器件没接或坏了） */
 static uint8_t SoftI2C_WriteByte(uint8_t write_byte)
 {
-	uint8_t bit_index;
-	uint8_t acknowledge;
+	uint8_t bit_index;      /* 一个字节 8 位，从最高位开始一位一位发，这是第几位（0~7） */
+	uint8_t acknowledge;    /* 发完 8 位后从机回的那 1 位：SDA 被拉低 = 应答 = 成功。
+	                         * 本函数把「收到应答」记成 1、「没应答」记成 0，
+	                         * 这样上层写 if(!SoftI2C_WriteByte(x)) 就是在问"失败了吗"。 */
 
 	for (bit_index = 0; bit_index < 8; bit_index++)
 	{
@@ -219,8 +235,8 @@ static uint8_t SoftI2C_WriteByte(uint8_t write_byte)
 
 static uint8_t SoftI2C_ReadByte(uint8_t send_acknowledge)
 {
-	uint8_t bit_index;
-	uint8_t received_byte = 0;
+	uint8_t bit_index;              /* 读第几位（0~7），一共读 8 位拼成一个字节 */
+	uint8_t received_byte = 0;      /* 拼出来的那个字节：每读一位先整体左移，再把新的一位放到最低位 */
 
 	SOFT_I2C_SDA_HIGH();
 
@@ -269,7 +285,8 @@ static uint8_t SoftI2C_ReadByte(uint8_t send_acknowledge)
  * 代价：每次读失败多一次比较；只有真失败时才打那 9 个时钟（约 0.2 毫秒）。 */
 static void SoftI2C_BusRecovery(void)
 {
-	uint8_t pulse_count;
+	uint8_t pulse_count;    /* 已经打了几个时钟脉冲。最多打 9 个 ——
+	                         * 一个字节 8 位，再多 1 个就足够让从机把没发完的字节发完并松开 SDA */
 
 	SOFT_I2C_SDA_HIGH();
 	SOFT_I2C_SCL_HIGH();
@@ -298,6 +315,10 @@ static void SoftI2C_BusRecovery(void)
 
 /* ==================== 芯片寄存器读写 ==================== */
 
+/* 往芯片的某一个寄存器写一个字节。
+ * register_address：寄存器地址，比如 0x6B 是 PWR_MGMT_1（电源管理，用来唤醒芯片）
+ * register_value  ：要写进去的值，比如 0x01 是"唤醒 + 时钟切到陀螺仪 PLL"
+ * 返回 1 = 写成功；0 = 中途从机没应答（模块没接上或者坏了）。 */
 static uint8_t GyroChip_WriteRegister(uint8_t register_address, uint8_t register_value)
 {
 	SoftI2C_Start();
@@ -321,9 +342,14 @@ static uint8_t GyroChip_WriteRegister(uint8_t register_address, uint8_t register
 	return 1;
 }
 
+/* 从芯片连续读若干个寄存器（芯片会自动把寄存器地址往后加，所以只要给起始地址）。
+ * start_register：从哪个寄存器开始读。0x47 = Z 轴高字节；0x43 = X 轴高字节（一次读三轴时用）
+ * read_buffer   ：读回来的字节放到这个数组里，数组由调用者自己准备
+ * read_count    ：要读几个字节。只读 Z 轴 = 2；读 X/Y/Z 三轴 = 6
+ * 返回 1 = 全部读完；0 = 中途从机没应答，此时 read_buffer 里的内容是作废的，不要用。 */
 static uint8_t GyroChip_ReadRegisters(uint8_t start_register, uint8_t *read_buffer, uint8_t read_count)
 {
-	uint8_t byte_index;
+	uint8_t byte_index;     /* 当前读到第几个字节（0 ~ read_count-1） */
 
 	SoftI2C_Start();
 	if (!SoftI2C_WriteByte((uint8_t)(GYRO_CHIP_I2C_ADDRESS << 1)))
@@ -369,8 +395,11 @@ static uint8_t GyroChip_ReadRegisters(uint8_t start_register, uint8_t *read_buff
 /* 只做三件事：确认芯片活着、唤醒、配置量程。很快，不阻塞。 */
 void Gyro_Init(void)
 {
-	uint8_t who_am_i_value = 0;
-	uint8_t retry_times;
+	uint8_t who_am_i_value = 0;   /* 从 0x75 读回来的"身份号"：ICM-20602 = 0x12（十进制 18），
+	                               * MPU6050 = 0x68（十进制 104）。
+	                               * 读不到、或者读出来既不是 18 也不是 104，就认为模块没接上。 */
+	uint8_t retry_times;          /* 重试计数。芯片上电后要过约 100 毫秒才开始应答，
+	                               * 所以最多试 GYRO_CHIP_DETECT_RETRY = 5 次，每次隔 20 毫秒。 */
 
 	Delay_ms(GYRO_CHIP_POWER_ON_WAIT_MS);
 	SoftI2C_InitPins();
@@ -415,15 +444,19 @@ void Gyro_Init(void)
  * 就落在 X 或 Y 上，只读 Z 会永远是 0（2026-11-21 踩过这个坑）。 */
 void Gyro_Update(uint32_t current_ms)
 {
-	uint8_t axis_raw_bytes[6];
-	int16_t axis_x_raw;
-	int16_t axis_y_raw;
-	int16_t axis_z_raw;
-	float   rate_degrees_per_second;
-	float   sample_period_seconds;
-	uint32_t delta_ms;
-	uint8_t start_register;
-	uint8_t read_byte_count;
+	uint8_t axis_raw_bytes[6];          /* 从芯片读回来的原始字节，最多 6 个（X/Y/Z 各 2 个）。
+	                                     * 只读 Z 轴时只用到前 2 个。原始值 = 高低两个字节拼起来的 16 位数 */
+	int16_t axis_x_raw;                 /* X 轴原始读数（拼好的 16 位数）。只读 Z 轴时恒为 0，台架诊断用 */
+	int16_t axis_y_raw;                 /* Y 轴原始读数。只读 Z 轴时恒为 0，台架诊断用 */
+	int16_t axis_z_raw;                 /* Z 轴原始读数 = 竖直轴，跑车只认这个 */
+	float   rate_degrees_per_second;    /* 这一轮的转速，单位「度/秒」（已经减掉零偏）。
+	                                     * 算法：(原始读数 − 零偏) ÷ 65.5 */
+	float   sample_period_seconds;      /* 这一轮的周期，单位秒。正常情况下是 0.005 秒，
+	                                     * 主循环被打断时会变大（最多按 0.05 秒算） */
+	uint32_t delta_ms;                  /* 这次调用和上次调用隔了多少毫秒（0 ~ 50）。
+	                                     * 用真实值而不是固定 5 毫秒，理由见下面那段注释 */
+	uint8_t start_register;             /* 这次从哪个寄存器开始读：三轴模式 0x43，只读 Z 轴 0x47 */
+	uint8_t read_byte_count;            /* 这次读几个字节：三轴 6 个，只读 Z 轴 2 个 */
 
 	if (!Gyro_IsAvailable)
 	{
@@ -431,10 +464,15 @@ void Gyro_Update(uint32_t current_ms)
 	}
 
 	/* 真实周期：这次调用和上次隔了多少毫秒。                 2026-11-21 改
-	 * 为什么不再固定乘 0.005：主循环偶尔会被 Debug_log 阻塞约 2 毫秒
-	 *   （100 毫秒发一次 24 字节，115200 下约 2 毫秒），那一轮的间隔就变成约 7 毫秒。
-	 *   固定按 5 毫秒算，这一帧的转速贡献就低估约 28%；
-	 *   一个 374 毫秒的弯里来几次，累计少算 1 度多，车会转过头。
+	 * 为什么不再固定乘 0.005（5 毫秒）：
+	 *   ① 主循环不是精确的 5 毫秒节拍。被中断、被长任务打断，某一轮就会变长；
+	 *   ② 波形发送改成 DMA 以后，Debug_log 已经是微秒级返回，
+	 *      「被波形阻塞约 2 毫秒」这个理由**不再成立**
+	 *      （那是轮询发送时的事：100 毫秒发一次 24 字节，115200 下约 2 毫秒）；
+	 *   ③ 但「固定按 5 毫秒积分」本身仍然是错的：
+	 *      只要有一轮真的变成 7 毫秒，这一帧的转速贡献就低估约 28%（5 ÷ 7），
+	 *      一个 374 毫秒的弯里来几次，累计能少算 1 度多，车会转过头。
+	 * 所以做法保留、理由改写：它防的是「主循环被打断」，不是「被 Debug_log 打断」。
 	 * 代价：一次减法，不占额外时间。 */
 	if (Gyro_DtReady)
 	{
@@ -521,7 +559,7 @@ void Gyro_Update(uint32_t current_ms)
 	if ((rate_degrees_per_second > GYRO_RATE_DEADBAND_DPS)
 	    || (rate_degrees_per_second < -GYRO_RATE_DEADBAND_DPS))
 	{
-		Gyro_TotalAngleDegrees += rate_degrees_per_second * sample_period_seconds;
+		Gyro_TotalAngleDegrees += rate_degrees_per_second * sample_period_seconds;//角速度积分
 	}
 }
 

@@ -276,7 +276,7 @@ void Service_Init(void)
 	NVIC_PriorityGroupConfig(NVIC_PriorityGroup_2);
 	Encoder_Init();
 	Motor_Init();
-	Key_Init();//后面删掉换成语音模块
+	Key_Init();
 	// 台架标定模式:上电瞬间按住开关不放就进标定
 	// (按键接在 PA0, 上拉输入, 按下 = 低电平; 具体引脚见 Key.c)
 	if (GPIO_ReadInputDataBit(GPIOA, GPIO_Pin_0) == 0)
@@ -287,7 +287,7 @@ void Service_Init(void)
 	BlueTooth_Init();
 	Debug_Init();
 	Indicator_Init();
-	Gyro_Init();          /* 陀螺仪：模块不在也不影响，Gyro_Ok 会保持 0 */
+	Gyro_Init();
 	k210rcv_Init();
 	SysTimer_Init();
 	PID_VelocityLoop_Init(&pid_v_left,100.0f,10.0f,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//台架调定 Kp=100 Ki=10
@@ -319,7 +319,8 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 	 *   ② 上电后头 1.25 秒在测零偏，放在这里的话一上电就开始测，
 	 *      等用户按启动时零偏早就好了；放在台架分支里就只有台架模式才测。
 	 * 传 curr_ms 进去：陀螺仪要用「这次和上次隔了多少毫秒」算角度，
-	 *   不能用固定的 5 毫秒（主循环偶尔被 Debug_log 阻塞 2 毫秒）。 */
+	 *   不能用固定的 5 毫秒 —— 主循环不是精确节拍，被中断或长任务打断时
+	 *   某一轮会变长（2026-11-21 波形改 DMA 后，Debug_log 已经不再阻塞主循环）。 */
 	Gyro_Update(curr_ms);
 
 	// ---- 台架:编码器里程标定 ----
