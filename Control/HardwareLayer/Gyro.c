@@ -106,6 +106,10 @@ static uint8_t  Gyro_BiasSkipCount         = 0;      /* 还要丢掉多少个上
 static uint16_t Gyro_ReadErrorCount        = 0;
 static uint32_t Gyro_LastUpdateMs          = 0;      /* 上次调用 Gyro_Update 的时刻 */
 static uint8_t  Gyro_DtReady               = 0;      /* 1 = 已经记过时刻，可以算真实间隔了 */
+static uint16_t Gyro_ConsecutiveFailCount  = 0;      /* 连续读失败次数，成功一次就清零 */
+
+/* 连续失败这么多次（10 × 5 毫秒 = 50 毫秒）就试着救一次总线 */
+#define GYRO_RECOVERY_AFTER_FAILS           10
 
 /* ==================== 软件 I2C 的引脚操作 ==================== */
 
@@ -245,6 +249,43 @@ static uint8_t SoftI2C_ReadByte(uint8_t send_acknowledge)
 	return received_byte;
 }
 
+/* ==================== 总线恢复（2026-11-21 新增） ====================
+ * 干什么：如果从机把 SDA 一直拉低（上电时序乱了、突然掉电、被静电打懵），
+ *         主机会永远收到"不应答"，角度再也不涨。
+ * 标准救法：主机自己打最多 9 个时钟，让从机把没发完的字节发完、松开 SDA，
+ *         再补一个停止条件，总线就自由了。
+ * 什么时候调：① 上电初始化时先来一次；② 连续读失败 10 次（50 毫秒）时救一次。
+ * 为什么不会干扰正常通信：正常总线上 SDA 是高的，函数第一句就 return，什么都不做。
+ * 代价：每次读失败多一次比较；只有真失败时才打那 9 个时钟（约 0.2 毫秒）。 */
+static void SoftI2C_BusRecovery(void)
+{
+	uint8_t pulse_count;
+
+	SOFT_I2C_SDA_HIGH();
+	SOFT_I2C_SCL_HIGH();
+	SoftI2C_WaitOneBit();
+
+	if (SOFT_I2C_SDA_READ())
+	{
+		return;                     /* SDA 是高的 → 总线正常，不用管 */
+	}
+
+	for (pulse_count = 0; pulse_count < 9; pulse_count++)
+	{
+		SOFT_I2C_SCL_LOW();
+		SoftI2C_WaitOneBit();
+		SOFT_I2C_SCL_HIGH();
+		SoftI2C_WaitOneBit();
+
+		if (SOFT_I2C_SDA_READ())
+		{
+			break;                  /* 从机松手了 */
+		}
+	}
+
+	SoftI2C_Stop();
+}
+
 /* ==================== 芯片寄存器读写 ==================== */
 
 static uint8_t GyroChip_WriteRegister(uint8_t register_address, uint8_t register_value)
@@ -328,6 +369,7 @@ void Gyro_Init(void)
 
 	Gyro_WaitMilliseconds(GYRO_CHIP_POWER_ON_WAIT_MS);
 	SoftI2C_InitPins();
+	SoftI2C_BusRecovery();      /* 万一上电时从机拉着 SDA，先把总线放干净 */
 
 	for (retry_times = 0; retry_times < GYRO_CHIP_DETECT_RETRY; retry_times++)
 	{
@@ -409,8 +451,18 @@ void Gyro_Update(uint32_t current_ms)
 		{
 			Gyro_ReadErrorCount++;
 		}
+
+		/* 连续失败到 10 次（50 毫秒）就试着救一次总线，帮从机松开 SDA。 */
+		Gyro_ConsecutiveFailCount++;
+		if (Gyro_ConsecutiveFailCount >= GYRO_RECOVERY_AFTER_FAILS)
+		{
+			SoftI2C_BusRecovery();
+			Gyro_ConsecutiveFailCount = 0;
+		}
 		return;
 	}
+
+	Gyro_ConsecutiveFailCount = 0;
 
 	axis_x_raw = (int16_t)(((uint16_t)axis_raw_bytes[0] << 8) | axis_raw_bytes[1]);  /* 0x43/0x44 = X 轴 */
 	axis_y_raw = (int16_t)(((uint16_t)axis_raw_bytes[2] << 8) | axis_raw_bytes[3]);  /* 0x45/0x46 = Y 轴 */

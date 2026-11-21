@@ -1,9 +1,20 @@
-﻿#include <string.h>
+#include <string.h>
 #include "Protocol.h"
 
 
 static int8_t  target_error = 0;
 static uint8_t car_state = 0;
+
+/* 影子变量（2026-11-21 新增，修「帧撕裂」）
+ * 为什么需要：偏差字节和状态字节是分两次写进 target_error / car_state 的，
+ *   中间隔 87 微秒（115200 波特率，一个字节 10 位）。如果主循环正好在这 87 微秒里读，
+ *   就会读到「新的偏差 + 旧的状态」，两个数来自不同帧。
+ * 怎么修：整帧收完（等到帧尾 0x55）的那一瞬间，把两个字节一次复制进影子；
+ *   主循环只读影子。复制只发生在完整帧的边界上，所以永远读不到半新半旧的组合。
+ * 代价：每帧多复制 2 个字节。 */
+static int8_t  target_error_shadow = 0;
+static uint8_t car_state_shadow = 0;
+
 static volatile uint8_t data_ready = 0;
 
 //视觉状态机
@@ -44,7 +55,13 @@ void Protocol_VisionParse(uint8_t data)
             break;
             
         case V_WAIT_TAIL:
-            if(data == FRAME_TAIL) data_ready = 1; // 【修改点】
+            if(data == FRAME_TAIL)
+            {
+                /* 2026-11-21 修：整帧收完了，才把两个字节一次搬进影子 */
+                target_error_shadow = target_error;
+                car_state_shadow    = car_state;
+                data_ready = 1;
+            }
             current_state = V_WAIT_HEADER; 
             break;
             
@@ -63,8 +80,8 @@ uint8_t Protocol_GetVision(VisionData_t *out_data)
         __disable_irq(); 
         // 关总中断，防止读取时被两个数据K210新数据覆盖单个,导致数据错乱
 
-        out_data->error = target_error;
-        out_data->car_state = car_state;
+        out_data->error = target_error_shadow;
+        out_data->car_state = car_state_shadow;
         data_ready = 0;
         
         __set_PRIMASK(primask);
