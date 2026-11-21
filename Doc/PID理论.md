@@ -1,7 +1,7 @@
 # PID 控制理论（完整版 · 面向新手）
 
 > 本文所有数字均取自本项目实际代码，可逐条核对。
-> 代码位置：`Control/AlgorithmLayer/PID.c`、`Control/AppLayer/Service.c`
+> 代码位置：`Control/MID/Src/PID.c`、`Control/APP/Src/Service.c`
 
 ---
 
@@ -1194,4 +1194,4 @@ PID_LineLoop_Init(&pid_l, 0, 0, ...);             // Kp=0, Kd=0
 
 **文档结束。**
 
-> 本文所描述的所有代码行为均可在 `Control/AlgorithmLayer/PID.c` 与 `Control/AppLayer/Service.c` 中逐行核对。
+> 本文所描述的所有代码行为均可在 `Control/MID/Src/PID.c` 与 `Control/APP/Src/Service.c` 中逐行核对。

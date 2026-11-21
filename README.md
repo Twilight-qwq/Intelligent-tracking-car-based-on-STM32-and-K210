@@ -27,12 +27,17 @@ The track geometry and the rules the vehicle must satisfy are documented in
 ```
 11_CoconutCar/
 ├── Control/                     STM32 firmware (Keil MDK project)
-│   ├── AlgorithmLayer/          PID algorithms: velocity PI, line-tracking PD
-│   ├── AppLayer/                Service layer: scheduling and application logic
+│   ├── APP/                     Application layer (laid out 2026-11-21)
+│   │   ├── Src/                 Service.c — scheduling and application logic
+│   │   └── Inc/                 Service.h
+│   ├── MID/                     Middleware layer
+│   │   ├── Src/                 Protocol.c (frame parser), Delay.c, PID.c (PI / PD)
+│   │   └── Inc/                 Protocol.h, Delay.h, PID.h
+│   ├── BSP/                     Board support layer
+│   │   ├── Src/                 Motor / Encoder / Key / BlueTooth / ReceiverK210 /
+│   │   │                        Voice / Gyro / IndicatorLED / WatchDog / SysTimer
+│   │   └── Inc/                 matching headers
 │   ├── DebugLayer/              Non-blocking debug output (DMA + snprintf)
-│   ├── HardwareLayer/           Motor / encoder / key / Bluetooth / K210 RX / voice
-│   ├── MiddleLayer/             Frame protocol parser
-│   ├── SystemLayer/             1 ms system time base
 │   ├── User/                    main.c and interrupt vectors
 │   ├── Library/                 ST standard peripheral library
 │   └── Start/                   Startup files and CMSIS
@@ -234,7 +239,7 @@ All tunables are collected in [`Visual/config.py`](Visual/config.py):
 | `LOST_KEEP` | Number of frames a line loss is tolerated |
 
 On the STM32 side, base speeds live at the top of
-[`Control/AppLayer/Service.c`](Control/AppLayer/Service.c), PID gains in `Service_Init()`.
+[`Control/APP/Src/Service.c`](Control/APP/Src/Service.c), PID gains in `Service_Init()`.
 
 ---
 
@@ -245,7 +250,7 @@ On the STM32 side, base speeds live at the top of
 - ⚠️ The **77° apex** (103° of heading change, 0.25 m turn radius) is the hardest case;
   the camera loses the lane for roughly the last 0.3 m and the vehicle currently relies on
   "hold the last error at minimum speed" to carry through
-- ⏳ The voice module is implemented in `HardwareLayer/Voice.c` but not yet wired into the
+- ⏳ The voice module is implemented in `BSP/Src/Voice.c` but not yet wired into the
   main control flow
 - ⏳ Finish-line detection is scaffolded (`FINISH_ENABLE`) and disabled by default
 
