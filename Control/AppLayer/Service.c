@@ -43,6 +43,18 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
 #define TURN_DIFF_TARGET   1730.0f  // 转 90 度需要累计的(左-右)counts
                                     // 标定记录:理论值 111.8*11=1230,实测只转出 64 度
                                     //          按比例 1230*90/64 = 1730(内轮被拖着走,编码器多算了)
+
+/* ===== 转弯结束条件：用陀螺仪量出来的角度，还是数编码器计数 =====
+ * 为什么要换：1730 这个数是"在固定场地上被手推出来的"，
+ *   它把打滑、地面、电量全都折进去了。换个地面、电池电压变低、轮胎磨了，
+ *   同样的 1730 就会转出不同角度。陀螺仪直接量车身转了多少度，和打滑无关。
+ * 怎么退回去：把这个改成 0 就是老办法（数到 1730 就停），不用改别的任何一行。
+ * 陀螺仪坏了怎么办：Gyro_IsOk() 返回 0 时自动退回数字编码器，这条永远成立。 */
+#define TURN_USE_GYRO_ANGLE  1      /* 1 = 转到 TURN_TARGET_ANGLE_DEG 度就停；0 = 老办法 */
+#define TURN_TARGET_ANGLE_DEG 90.0f /* 目标转角（度）。右转陀螺仪读出来是负的，比较时取绝对值 */
+                                    /* 2026-11-21：这一版五个弯都按 90° 转，和原来数 1730 等效。
+                                     * 以后认得是哪个弯了，直角 90 / 钝角 38.5 / 锐角 103 分开填 */
+
 #define TURN_SPEED         15.0f    // 转弯时基速(= Speed_LargeAngle)
 #define TURN_VALUE         11.55f   // 转弯时差速(= Kp 0.231 * 视觉固定值 50)
 #define TURN_TIMEOUT_MS    800      // 兜底:0.8秒还没转够就强制结束(卡住了也不至于一直转)
@@ -127,6 +139,45 @@ static float    Calib_Right  = 0.0f;   // 右轮累计 counts
 static float    Calib_Cm     = 0.0f;   // 累计里程(换算厘米)
 static uint32_t Calib_IdleMs = 0;      // 已经多少毫秒没有新计数
 
+/* 这个弯转够了没有？每 5 毫秒问一次。                                    2026-11-21 新增
+ * 返回 1 = 够了，该停；0 = 还要继续转。
+ *
+ * 优先用陀螺仪：它量的是车身真的转了多少度，和轮子打滑无关。
+ * 陀螺仪不在（Gyro_IsOk() = 0）就自动退回老办法：数编码器计数到 TURN_DIFF_TARGET。
+ * 所以这个函数永远不会因为陀螺仪坏掉而转不停。
+ *
+ * Corner_Accum 是转弯过程中累计的 (左轮计数 − 右轮计数)。
+ * Gyro_GetTotalAngle() 是陀螺仪累计的角度（度），右转为负，所以比较前取绝对值。 */
+static uint8_t Corner_TurnAngleReached(void)
+{
+#if TURN_USE_GYRO_ANGLE
+	float turned_angle_degrees;
+
+	if (Gyro_IsOk())
+	{
+		turned_angle_degrees = Gyro_GetTotalAngle();
+		if (turned_angle_degrees < 0.0f)
+		{
+			turned_angle_degrees = -turned_angle_degrees;
+		}
+
+		if (turned_angle_degrees >= TURN_TARGET_ANGLE_DEG)
+		{
+			return 1;
+		}
+
+		return 0;
+	}
+#endif
+	/* 老办法，或者陀螺仪不在时的退路 */
+	if (Corner_Accum >= TURN_DIFF_TARGET)
+	{
+		return 1;
+	}
+
+	return 0;
+}
+
 uint32_t Service_Clock(void)
 {
 	return SysTimer_GetTick();
@@ -186,6 +237,13 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 	actual_left  = (float)Encoder_GetDeltaLeft();
 	actual_right = (float)Encoder_GetDeltaRight();
 
+	/* 陀螺仪每 5 毫秒读一次。                                     2026-11-21 改
+	 * 为什么从"只在台架模式读"挪到这里：
+	 *   ① 转弯结束条件要靠它量角度，跑车时也必须更新；
+	 *   ② 上电后头 1.25 秒在测零偏，放在这里的话一上电就开始测，
+	 *      等用户按启动时零偏早就好了；放在台架分支里就只有台架模式才测。 */
+	Gyro_Update();
+
 	// ---- 台架:编码器里程标定 ----
 	if(Calib_Mode)
 	{
@@ -211,7 +269,6 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 			}
 		}
 		Motor_SetDuty(0,0);//标定期间不驱动电机, 可以随便推
-		Gyro_Update();    /* 台架模式里顺手读陀螺仪：前 1 秒测零偏，之后积分角度 */
 		return;
 	}
 
@@ -223,11 +280,11 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 		Corner_Cool += ((actual_left + actual_right) * 0.5f) * CM_PER_COUNT;
 	}
 
-	//弯道转向:每5毫秒把(左轮-右轮)的增量加进累计值,加满目标角度就停
+	//弯道转向:每5毫秒检查"这个弯转够了没有",够了就停
 	if(Corner_Active)
 	{
-		Corner_Accum += (actual_left - actual_right);
-		if(Corner_Accum >= TURN_DIFF_TARGET || (curr_ms - Corner_Tick) > TURN_TIMEOUT_MS)
+		Corner_Accum += (actual_left - actual_right);   // 老办法用；走陀螺仪时只作记录
+		if(Corner_TurnAngleReached() || (curr_ms - Corner_Tick) > TURN_TIMEOUT_MS)
 		{
 			Corner_Active = 0;//转够90度了(或超时兜底),不再按弯道差速走
 			Corner_Done   = 1;//锁存:这个弯已经转过,视觉再喊弯也不转第二次
@@ -251,6 +308,10 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 			Corner_Active = 1;
 			Corner_Accum  = 0.0f;
 			Corner_Tick   = curr_ms;
+			/* 转弯就从这一刻算起，陀螺仪角度清零。
+			 * 为什么在这里清：等里程这 20 厘米里车会小幅画龙，
+			 * 角度从那时开始累的话会带进弯里；从"真正开始转"起算才干净。 */
+			Gyro_ResetTotalAngle();
 		}
 	}
 
@@ -517,9 +578,10 @@ static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
 
     /* ---------- 弯道转向状态机（三段） ----------
      * ① 视觉报弯：它看得比车走得远，这时候车离弯道还有一段，先直行过去
-     * ② 走够 TURN_ARM_CM：开始按固定差速转
-     * ③ 累计(左轮-右轮)达到 TURN_DIFF_TARGET：转够了，立刻停并锁存
-     * 视觉只负责"这里有弯"；什么时候开始转、转到什么时候，由轮子说了算。 */
+     * ② 走够 TURN_ARM_CM：开始按固定差速转，同时把陀螺仪角度清零
+     * ③ 陀螺仪量到转够 TURN_TARGET_ANGLE_DEG 度：立刻停并锁存
+     *    （陀螺仪不在时退回老办法：累计(左-右)达到 TURN_DIFF_TARGET 就停）
+     * 视觉只负责"这里有弯"；什么时候开始转由里程定，转多少度由陀螺仪定。 */
     if (state == 2)
     {
         Corner_Clear = 0;//视觉说这里就是弯,清掉"已经离开"的计数
