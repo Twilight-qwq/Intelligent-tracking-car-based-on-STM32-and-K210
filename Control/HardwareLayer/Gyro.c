@@ -37,6 +37,15 @@
  *   表现就是"手转 90° 角度几乎不动"（用户实测只变了 3 度）——
  *   因为模块平放时 X 轴感受不到绕竖直轴的转动。 */
 #define GYRO_CHIP_REG_AXIS_START    0x43
+#define GYRO_CHIP_REG_AXIS_Z        0x47    /* GYRO_ZOUT_H，Z 轴高字节 */
+
+/* 读几个轴（2026-11-21 加）
+ * 0 = 只读 Z 轴 2 个字节（默认）：Z 是竖直轴，跑车只用它。
+ *     一次读约 48 位，比读三轴少 43% 的时间（0.35 毫秒 → 0.20 毫秒）。
+ * 1 = 读 X/Y/Z 三轴 6 个字节：只在需要重新确认「哪根是竖直轴」时用
+ *     （比如模块重新装过、换了一个模块）。这时台架模式的 I1/I2 才有数。
+ * 改完记着：读 0 的时候台架 I1、I2 会恒为 0，这是正常的，不是坏。 */
+#define GYRO_READ_ALL_AXES          0
 
 /* GYRO_CHIP_NOTE_1：WHO_AM_I 的返回值。
  *   ICM-20602 = 0x12（18）
@@ -413,6 +422,8 @@ void Gyro_Update(uint32_t current_ms)
 	float   rate_degrees_per_second;
 	float   sample_period_seconds;
 	uint32_t delta_ms;
+	uint8_t start_register;
+	uint8_t read_byte_count;
 
 	if (!Gyro_IsAvailable)
 	{
@@ -441,7 +452,15 @@ void Gyro_Update(uint32_t current_ms)
 	}
 	Gyro_LastUpdateMs = current_ms;
 
-	if (!GyroChip_ReadRegisters(GYRO_CHIP_REG_AXIS_START, axis_raw_bytes, 6))
+#if GYRO_READ_ALL_AXES
+	start_register  = GYRO_CHIP_REG_AXIS_START;   /* 0x43，一次拿 X/Y/Z */
+	read_byte_count = 6;
+#else
+	start_register  = GYRO_CHIP_REG_AXIS_Z;       /* 0x47，只拿 Z */
+	read_byte_count = 2;
+#endif
+
+	if (!GyroChip_ReadRegisters(start_register, axis_raw_bytes, read_byte_count))
 	{
 		if (Gyro_ReadErrorCount < 60000)
 		{
@@ -460,9 +479,15 @@ void Gyro_Update(uint32_t current_ms)
 
 	Gyro_ConsecutiveFailCount = 0;
 
+#if GYRO_READ_ALL_AXES
 	axis_x_raw = (int16_t)(((uint16_t)axis_raw_bytes[0] << 8) | axis_raw_bytes[1]);  /* 0x43/0x44 = X 轴 */
 	axis_y_raw = (int16_t)(((uint16_t)axis_raw_bytes[2] << 8) | axis_raw_bytes[3]);  /* 0x45/0x46 = Y 轴 */
 	axis_z_raw = (int16_t)(((uint16_t)axis_raw_bytes[4] << 8) | axis_raw_bytes[5]);  /* 0x47/0x48 = Z 轴 */
+#else
+	axis_x_raw = 0;                                                                 /* 没读，置 0 */
+	axis_y_raw = 0;                                                                 /* 没读，置 0 */
+	axis_z_raw = (int16_t)(((uint16_t)axis_raw_bytes[0] << 8) | axis_raw_bytes[1]);  /* 0x47/0x48 = Z 轴 */
+#endif
 
 	Gyro_AxisXRaw = axis_x_raw;
 	Gyro_AxisYRaw = axis_y_raw;
