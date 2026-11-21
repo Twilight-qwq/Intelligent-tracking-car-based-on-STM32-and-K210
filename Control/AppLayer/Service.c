@@ -50,10 +50,57 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
  *   同样的 1730 就会转出不同角度。陀螺仪直接量车身转了多少度，和打滑无关。
  * 怎么退回去：把这个改成 0 就是老办法（数到 1730 就停），不用改别的任何一行。
  * 陀螺仪坏了怎么办：Gyro_IsOk() 返回 0 时自动退回数字编码器，这条永远成立。 */
-#define TURN_USE_GYRO_ANGLE  1      /* 1 = 转到 TURN_TARGET_ANGLE_DEG 度就停；0 = 老办法 */
-#define TURN_TARGET_ANGLE_DEG 90.0f /* 目标转角（度）。右转陀螺仪读出来是负的，比较时取绝对值 */
-                                    /* 2026-11-21：这一版五个弯都按 90° 转，和原来数 1730 等效。
-                                     * 以后认得是哪个弯了，直角 90 / 钝角 38.5 / 锐角 103 分开填 */
+#define TURN_USE_GYRO_ANGLE  1      /* 1 = 转到目标角就停；0 = 老办法数编码器 */
+#define TURN_TARGET_ANGLE_DEG 90.0f /* 默认目标角（度）。真正用哪个由下面的表决定 */
+
+/* ===== 里程查表：按「这是第几个要甩的弯」决定转多少度   2026-11-21 新增 =====
+ *
+ * 为什么要有表：五个弯角度不同（直角 90 / 钝角 38.5 / 锐角 103 / 钝角 38.5 / 直角 90），
+ *   全按 90 转必压线。而视觉认不出是哪种，只能认出「有没有弯」。
+ *
+ * 谁决定「是第几个弯」：里程。每转完一个弯，里程清零、编号 +1，所以误差不跨段累积。
+ * 谁决定「转多少度」：这张表。
+ * 谁保证「真转到位」：陀螺仪。
+ *
+ * 三个开关（都能单独回退，不用改别的行）：
+ *   TURN_USE_MILEAGE_TABLE = 0 → 完全不查表，回到「视觉报弯就转 90」的老行为
+ *   TURN_USE_38_BENDS      = 1 → 两个 38.5° 浅弯也甩（默认 0：当直线，靠方向环自己过）
+ *   TURN_ALLOW_FORCE       = 1 → 里程到了视觉还没报，就强行转（默认 0：只认视觉）
+ */
+#define TURN_USE_MILEAGE_TABLE  1
+#define TURN_USE_38_BENDS       0
+#define TURN_ALLOW_FORCE        0
+
+/* 死区：离本段阈值超过这么多厘米，就当视觉在报假信号，不转。
+ * 55 的来历：最短一段 110 厘米的一半，超过它「最近的阈值」就可能是下一个弯了。 */
+#define TURN_DIST_TOLERANCE_CM  55.0f
+
+/* 里程兜底：超过阈值这么多厘米还没等到视觉报弯，就强行转（要 TURN_ALLOW_FORCE = 1 才生效） */
+#define TURN_FORCE_CM           30.0f
+
+/* 第二道闸（2026-11-21 新增）：编码器累计超过这个数也停。
+ * 为什么需要：陀螺仪如果半路坏掉（不是上电就坏，Gyro_IsOk 还是 1），
+ *   角度就永远不涨，车会一直转，只剩 800 毫秒超时兜底 ——
+ *   800 毫秒 × 240 度/秒 ≈ 190 度，车直接转成背朝前。
+ * 2400 的来历：90 度要 1730 计数，103 度约 1980；取 2400 = 1730 × 1.39，
+ *   正常转弯（包括 103 度）都够不到，不会误触发。 */
+#define TURN_COUNT_BACKSTOP     2400.0f
+
+/* ===== 弯道速度表（2026-11-21）=====
+ * 直道 30 档，一看到弯就降到 15（用视觉报弯到弯口那 20 厘米当刹车距离），
+ * 转弯本身也是 15 档，出弯先保持 20 档跑一段再回 30。 */
+#define Speed_CornerExit    20.0f   /* 出弯后交接期间的速度，交接完才回 Speed_Straight */
+
+#if TURN_USE_38_BENDS
+  #define TURN_TABLE_SIZE 5
+  static const float Turn_ThresholdCm[TURN_TABLE_SIZE] = { 200.0f, 110.0f, 240.0f, 240.0f, 110.0f };
+  static const float Turn_AngleDeg[TURN_TABLE_SIZE]     = {  90.0f,  38.5f, 103.0f,  38.5f,  90.0f };
+#else
+  #define TURN_TABLE_SIZE 3
+  /* 阈值单位：厘米，从「起点 / 上一个弯转完」算起。下面这三个是几何值，必须实测替换！ */
+  static const float Turn_ThresholdCm[TURN_TABLE_SIZE] = { 200.0f, 350.0f, 350.0f };
+  static const float Turn_AngleDeg[TURN_TABLE_SIZE]     = {  90.0f, 103.0f,  90.0f };
+#endif
 
 #define TURN_SPEED         15.0f    // 转弯时基速(= Speed_LargeAngle)
 #define TURN_VALUE         11.55f   // 转弯时差速(= Kp 0.231 * 视觉固定值 50)
@@ -110,6 +157,9 @@ static float    Corner_Accum  = 0.0f;  // 累计(左轮-右轮)counts, 就是转
 static uint32_t Corner_Tick   = 0;     // 本次转弯开始的时刻, 供兜底超时用
 static uint32_t Corner_DoneTick = 0;   // 转完90度的时刻, 供"限时交回视觉"用
 static float    Corner_Cool     = 99999.0f; // 冷却已走的距离(厘米), 大数=不冷却
+static uint8_t  Corner_Index      = 0;      // 正要去第几个要甩的弯(查表下标)   2026-11-21
+static float    Corner_SegMileage = 0.0f;   // 从上一个弯转完到现在走了多少厘米  2026-11-21
+static float    Turn_TargetAngle_Deg = TURN_TARGET_ANGLE_DEG; // 本次转弯的目标角(度) 2026-11-21
 
 static uint8_t  Indicator_Tick    = 0;   //闪烁计数
 static uint8_t  Indicator_Fault   = 0;   //视觉断线锁存, 收到新数据才清除
@@ -150,23 +200,32 @@ static uint32_t Calib_IdleMs = 0;      // 已经多少毫秒没有新计数
  * Gyro_GetTotalAngle() 是陀螺仪累计的角度（度），右转为负，所以比较前取绝对值。 */
 static uint8_t Corner_TurnAngleReached(void)
 {
-#if TURN_USE_GYRO_ANGLE
-	float turned_angle_degrees;
-
-	if (Gyro_IsOk())
+	/* 第二道闸：编码器计数。陀螺仪半路坏了、角度不涨时，靠这个兜底。
+	 * 正常转弯（包括 103 度）都到不了 2400，所以平时不会误触发。 */
+	if (Corner_Accum >= TURN_COUNT_BACKSTOP)
 	{
-		turned_angle_degrees = Gyro_GetTotalAngle();
-		if (turned_angle_degrees < 0.0f)
-		{
-			turned_angle_degrees = -turned_angle_degrees;
-		}
+		return 1;
+	}
 
-		if (turned_angle_degrees >= TURN_TARGET_ANGLE_DEG)
-		{
-			return 1;
-		}
+#if TURN_USE_GYRO_ANGLE
+	{
+		float turned_angle_degrees;
 
-		return 0;
+		if (Gyro_IsOk())
+		{
+			turned_angle_degrees = Gyro_GetTotalAngle();
+			if (turned_angle_degrees < 0.0f)
+			{
+				turned_angle_degrees = -turned_angle_degrees;
+			}
+
+			if (turned_angle_degrees >= Turn_TargetAngle_Deg)
+			{
+				return 1;
+			}
+
+			return 0;
+		}
 	}
 #endif
 	/* 老办法，或者陀螺仪不在时的退路 */
@@ -280,22 +339,38 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 		Corner_Cool += ((actual_left + actual_right) * 0.5f) * CM_PER_COUNT;
 	}
 
+	/* 段内里程：从「上一个弯转完」到现在走了多少厘米。   2026-11-21 新增
+	 * 为什么不数整圈：整圈 998.8 厘米，按 ±2% 的刻度误差会累积到 ±20 厘米；
+	 * 每过一个弯清零，最长一段 350 厘米，误差只有 ±7 厘米。 */
+	Corner_SegMileage += ((actual_left + actual_right) * 0.5f) * CM_PER_COUNT;
+
 	//弯道转向:每5毫秒检查"这个弯转够了没有",够了就停
 	if(Corner_Active)
 	{
 		Corner_Accum += (actual_left - actual_right);   // 老办法用；走陀螺仪时只作记录
 		if(Corner_TurnAngleReached() || (curr_ms - Corner_Tick) > TURN_TIMEOUT_MS)
 		{
-			Corner_Active = 0;//转够90度了(或超时兜底),不再按弯道差速走
+			Corner_Active = 0;//转够了(或超时兜底),不再按弯道差速走
 			Corner_Done   = 1;//锁存:这个弯已经转过,视觉再喊弯也不转第二次
 			Corner_DoneTick = curr_ms;//记下转完的时刻,供"限时交回视觉"用
 			Corner_Cool   = 0.0f;//冷却从这一刻开始重新算
-			// 立刻改成直行目标。
-			// 为什么:目标速度只有 30ms 任务会改,而那要等下一帧视觉(最多 27.7 毫秒)。
-			// 如果视觉正好在这一刻断掉,目标会一直停在转弯差速上,直到 330 毫秒超时停车 ——
-			// 这段时间车会再转将近 90 度(离线仿真里验证过)。所以这里直接把目标拨回直行。
-			target_left  = Speed_Straight;
-			target_right = Speed_Straight;
+
+			/* 这个弯过完了：段内里程清零、编号往后挪一个。   2026-11-21 新增
+			 * 这两行是「误差不跨段累积」的关键：下一段的阈值永远从这一刻重新算。 */
+			Corner_SegMileage = 0.0f;
+			if (Corner_Index + 1 < TURN_TABLE_SIZE)
+			{
+				Corner_Index++;
+			}
+
+			/* 立刻改成直行目标。
+			 * 为什么:目标速度只有 30ms 任务会改,而那要等下一帧视觉(最多 27.7 毫秒)。
+			 * 如果视觉正好在这一刻断掉,目标会一直停在转弯差速上,直到 330 毫秒超时停车 ——
+			 * 这段时间车会再转将近 90 度(离线仿真里验证过)。所以这里直接把目标拨回直行。
+			 * 但注意拨的是「出弯速度 20 档」不是 30 档:接下去还有 500 毫秒是盲开的
+			 * (CORNER_HANDOVER_MS),那段时间加速会越跑越偏。            2026-11-21 改 */
+			target_left  = Speed_CornerExit;
+			target_right = Speed_CornerExit;
 		}
 	}
 	else if(Corner_Armed)
@@ -308,8 +383,13 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 			Corner_Active = 1;
 			Corner_Accum  = 0.0f;
 			Corner_Tick   = curr_ms;
+
+			/* 从表里取出「这个弯该转多少度」。                    2026-11-21 新增
+			 * 直角 90 / 锐角 103 / 两个 38.5 的浅弯默认不甩（不在这张表里）。 */
+			Turn_TargetAngle_Deg = Turn_AngleDeg[Corner_Index];
+
 			/* 转弯就从这一刻算起，陀螺仪角度清零。
-			 * 为什么在这里清：等里程这 20 厘米里车会小幅画龙，
+			 * 为什么在这里清：等里程那 20 厘米里车会小幅画龙，
 			 * 角度从那时开始累的话会带进弯里；从"真正开始转"起算才干净。 */
 			Gyro_ResetTotalAngle();
 		}
@@ -416,6 +496,10 @@ static void Task_CarStop(void)
     Corner_Accum   = 0.0f;
     Corner_DoneTick = 0;
     Corner_Cool   = 99999.0f;//停车复位:下次启动第一个弯不该被冷却挡住
+    /* 里程编号与段内里程也要归零：下次启动必须从「第一个要甩的弯」重新数。  2026-11-21 */
+    Corner_Index         = 0;
+    Corner_SegMileage    = 0.0f;
+    Turn_TargetAngle_Deg = TURN_TARGET_ANGLE_DEG;
 }
 
 
@@ -576,6 +660,22 @@ static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
     if (raw_error >  LIMIT_LINE_ERR_MAX) raw_error =  LIMIT_LINE_ERR_MAX;
     if (raw_error < -LIMIT_LINE_ERR_MAX) raw_error = -LIMIT_LINE_ERR_MAX;
 
+#if (TURN_USE_MILEAGE_TABLE && TURN_ALLOW_FORCE)
+    /* 里程兜底：已经过了阈值 TURN_FORCE_CM 这么远，视觉还没报弯 → 强行转。 2026-11-21
+     * 默认关（TURN_ALLOW_FORCE = 0）：纯靠里程触发的最坏误差有 37 厘米（没实测过），
+     * 要先跑一整圈数出「该转没转」几次，再决定开不开。 */
+    if ((Corner_Done == 0) && (Corner_Active == 0) && (Corner_Armed == 0)
+        && (Corner_Cool >= CORNER_COOLDOWN_CM)
+        && (Corner_SegMileage > (Turn_ThresholdCm[Corner_Index] + TURN_FORCE_CM)))
+    {
+        Corner_Active = 1;
+        Corner_Accum  = 0.0f;
+        Corner_Tick   = Service_Clock();
+        Turn_TargetAngle_Deg = Turn_AngleDeg[Corner_Index];
+        Gyro_ResetTotalAngle();
+    }
+#endif
+
     /* ---------- 弯道转向状态机（三段） ----------
      * ① 视觉报弯：它看得比车走得远，这时候车离弯道还有一段，先直行过去
      * ② 走够 TURN_ARM_CM：开始按固定差速转，同时把陀螺仪角度清零
@@ -598,8 +698,8 @@ static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
             else
             {
                 // 刚转完这一小段先直行,让相机从"还在看弯道"缓过来
-                target_left  = Speed_Straight;
-                target_right = Speed_Straight;
+                target_left  = Speed_CornerExit;
+                target_right = Speed_CornerExit;
                 return;
             }
         }
@@ -619,6 +719,20 @@ static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
                 target_right = Speed_Straight;
                 return;
             }
+
+#if TURN_USE_MILEAGE_TABLE
+            /* 死区检查：视觉说是弯，但里程离本段阈值太远 → 当假信号。   2026-11-21 新增
+             * 为什么要这条：视觉认得「有弯」但认不出「是哪个弯」，见弯就喊；
+             *   而里程知道现在该不该有弯。两边对不上就别信视觉。
+             * 55 的来历：最短一段 110 厘米的一半。超过它，「最近的阈值」就已经是下一个弯了。 */
+            if (fabsf(Corner_SegMileage - Turn_ThresholdCm[Corner_Index]) > TURN_DIST_TOLERANCE_CM)
+            {
+                target_left  = Speed_Straight;
+                target_right = Speed_Straight;
+                return;
+            }
+#endif
+
             Corner_Armed = 1;
             target_left  = TURN_ARM_SPEED;
             target_right = TURN_ARM_SPEED;
@@ -632,11 +746,18 @@ static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
         if (Corner_Clear < 3) Corner_Clear++;
         if (Corner_Clear >= 3)
         {
-            Corner_Armed   = 0;
-            Corner_Active  = 0;
-            Corner_Done    = 0;
-            Corner_ArmDist = 0.0f;
-            Corner_Accum   = 0.0f;
+            /* 2026-11-21 修：正在转弯时不许被「视觉说不是弯」取消。
+             * 为什么：弯里 47.5% 的帧一条好行都没有，视觉在转弯过程中本来就经常哑火。
+             * 原来这里无条件清掉 Corner_Active，转弯会在半路停住 ——
+             * 而一个 90 度弯要 374 毫秒，3 帧安静只有 300 毫秒。
+             * 真正的结束条件只有两个：「转到目标角」或「800 毫秒超时」。 */
+            if (Corner_Active == 0)
+            {
+                Corner_Armed   = 0;
+                Corner_Done    = 0;
+                Corner_ArmDist = 0.0f;
+                Corner_Accum   = 0.0f;
+            }
         }
         //不 return,继续走下面的正常 PD 控制
     }
