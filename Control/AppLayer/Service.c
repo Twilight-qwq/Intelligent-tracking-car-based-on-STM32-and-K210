@@ -49,7 +49,11 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
  *   它把打滑、地面、电量全都折进去了。换个地面、电池电压变低、轮胎磨了，
  *   同样的 1730 就会转出不同角度。陀螺仪直接量车身转了多少度，和打滑无关。
  * 怎么退回去：把这个改成 0 就是老办法（数到 1730 就停），不用改别的任何一行。
- * 陀螺仪坏了怎么办：Gyro_IsOk() 返回 0 时自动退回数字编码器，这条永远成立。 */
+ * 陀螺仪坏了怎么办：分两种情况，别混。
+ *   ① 上电时就没认到（Gyro_IsOk() = 0）→ 转弯退回数编码器 1730，这条成立。
+ *   ② 跑着跑着 I2C 接触不良 → Gyro_IsOk() 仍然是 1（它只在初始化时决定一次），
+ *      角度只是不再增长，靠 TURN_COUNT_BACKSTOP(2400) 强制结束转弯。
+ *      后果是转得多一点（约 125 度），不是转不停。 */
 #define TURN_USE_GYRO_ANGLE  1      /* 1 = 转到目标角就停；0 = 老办法数编码器 */
 #define TURN_TARGET_ANGLE_DEG 90.0f /* 默认目标角（度）。真正用哪个由下面的表决定 */
 
@@ -155,11 +159,14 @@ static uint8_t  Corner_Clear  = 0;    // 连续多少帧视觉说"不是弯"
 static float    Corner_ArmDist = 0.0f; // 报弯后已经走的距离(换算厘米)
 static float    Corner_Accum  = 0.0f;  // 累计(左轮-右轮)counts, 就是转过的角度
 static uint32_t Corner_Tick   = 0;     // 本次转弯开始的时刻, 供兜底超时用
-static uint32_t Corner_DoneTick = 0;   // 转完90度的时刻, 供"限时交回视觉"用
-static float    Corner_Cool     = 99999.0f; // 冷却已走的距离(厘米), 大数=不冷却
-static uint8_t  Corner_Index      = 0;      // 正要去第几个要甩的弯(查表下标)   2026-11-21
-static float    Corner_SegMileage = 0.0f;   // 从上一个弯转完到现在走了多少厘米  2026-11-21
-static float    Turn_TargetAngle_Deg = TURN_TARGET_ANGLE_DEG; // 本次转弯的目标角(度) 2026-11-21
+static uint32_t Corner_DoneTick = 0;   // 转完的时刻, 供"限时交回视觉"用
+/* 2026-11-21 合并：原来的 Corner_Cool（冷却距离）删掉了。
+ * 它和 Corner_SegMileage 数的是同一件事——都是「转完到现在走了多少厘米」，
+ * 唯一的差别是 Cool 涨到 70 就停。所以直接拿 SegMileage 比 70 就行，
+ * 少一个变量、少一处会不一致的地方。 */
+static uint8_t  Corner_Index      = 0;      // 正要去第几个要甩的弯(查表下标)
+static float    Corner_SegMileage = 0.0f;   // 从上一个弯转完到现在走了多少厘米
+static float    Turn_TargetAngle_Deg = TURN_TARGET_ANGLE_DEG; // 本次转弯的目标角(度)
 
 static uint8_t  Indicator_Tick    = 0;   //闪烁计数
 static uint8_t  Indicator_Fault   = 0;   //视觉断线锁存, 收到新数据才清除
@@ -193,7 +200,8 @@ static uint32_t Calib_IdleMs = 0;      // 已经多少毫秒没有新计数
  * 返回 1 = 够了，该停；0 = 还要继续转。
  *
  * 优先用陀螺仪：它量的是车身真的转了多少度，和轮子打滑无关。
- * 陀螺仪不在（Gyro_IsOk() = 0）就自动退回老办法：数编码器计数到 TURN_DIFF_TARGET。
+ * 上电就没认到（Gyro_IsOk() = 0）才退回老办法：数编码器计数到 TURN_DIFF_TARGET。
+ * 注意运行期 I2C 坏掉不会让 Gyro_IsOk() 变 0，那种情况靠下面的 2400 强制停。
  * 所以这个函数永远不会因为陀螺仪坏掉而转不停。
  *
  * Corner_Accum 是转弯过程中累计的 (左轮计数 − 右轮计数)。
@@ -300,8 +308,10 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 	 * 为什么从"只在台架模式读"挪到这里：
 	 *   ① 转弯结束条件要靠它量角度，跑车时也必须更新；
 	 *   ② 上电后头 1.25 秒在测零偏，放在这里的话一上电就开始测，
-	 *      等用户按启动时零偏早就好了；放在台架分支里就只有台架模式才测。 */
-	Gyro_Update();
+	 *      等用户按启动时零偏早就好了；放在台架分支里就只有台架模式才测。
+	 * 传 curr_ms 进去：陀螺仪要用「这次和上次隔了多少毫秒」算角度，
+	 *   不能用固定的 5 毫秒（主循环偶尔被 Debug_log 阻塞 2 毫秒）。 */
+	Gyro_Update(curr_ms);
 
 	// ---- 台架:编码器里程标定 ----
 	if(Calib_Mode)
@@ -333,13 +343,10 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 
 	if(CarRun_State == 0) return;
 
-	//弯道冷却:转完一个弯之后要再走够 CORNER_COOLDOWN_CM 才允许下一个弯
-	if(Corner_Cool < CORNER_COOLDOWN_CM)
-	{
-		Corner_Cool += ((actual_left + actual_right) * 0.5f) * CM_PER_COUNT;
-	}
-
-	/* 段内里程：从「上一个弯转完」到现在走了多少厘米。   2026-11-21 新增
+	/* 段内里程：从「上一个弯转完」到现在走了多少厘米。
+	 * 一个数干两件事：
+	 *   ① 和阈值表比，决定「该不该转、该转多少度」
+	 *   ② 和 CORNER_COOLDOWN_CM(70) 比，当冷却用，防止同一个弯被报两次
 	 * 为什么不数整圈：整圈 998.8 厘米，按 ±2% 的刻度误差会累积到 ±20 厘米；
 	 * 每过一个弯清零，最长一段 350 厘米，误差只有 ±7 厘米。 */
 	Corner_SegMileage += ((actual_left + actual_right) * 0.5f) * CM_PER_COUNT;
@@ -353,7 +360,6 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 			Corner_Active = 0;//转够了(或超时兜底),不再按弯道差速走
 			Corner_Done   = 1;//锁存:这个弯已经转过,视觉再喊弯也不转第二次
 			Corner_DoneTick = curr_ms;//记下转完的时刻,供"限时交回视觉"用
-			Corner_Cool   = 0.0f;//冷却从这一刻开始重新算
 
 			/* 这个弯过完了：段内里程清零、编号往后挪一个。   2026-11-21 新增
 			 * 这两行是「误差不跨段累积」的关键：下一段的阈值永远从这一刻重新算。 */
@@ -495,7 +501,6 @@ static void Task_CarStop(void)
     Corner_ArmDist = 0.0f;
     Corner_Accum   = 0.0f;
     Corner_DoneTick = 0;
-    Corner_Cool   = 99999.0f;//停车复位:下次启动第一个弯不该被冷却挡住
     /* 里程编号与段内里程也要归零：下次启动必须从「第一个要甩的弯」重新数。  2026-11-21 */
     Corner_Index         = 0;
     Corner_SegMileage    = 0.0f;
@@ -665,7 +670,7 @@ static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
      * 默认关（TURN_ALLOW_FORCE = 0）：纯靠里程触发的最坏误差有 37 厘米（没实测过），
      * 要先跑一整圈数出「该转没转」几次，再决定开不开。 */
     if ((Corner_Done == 0) && (Corner_Active == 0) && (Corner_Armed == 0)
-        && (Corner_Cool >= CORNER_COOLDOWN_CM)
+        && (Corner_SegMileage >= CORNER_COOLDOWN_CM)
         && (Corner_SegMileage > (Turn_ThresholdCm[Corner_Index] + TURN_FORCE_CM)))
     {
         Corner_Active = 1;
@@ -711,7 +716,7 @@ static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
         }
         else //刚报弯:先看是不是还在上一个弯的冷却期里
         {
-            if (Corner_Cool < CORNER_COOLDOWN_CM)
+            if (Corner_SegMileage < CORNER_COOLDOWN_CM)
             {
                 // 冷却中:上一个弯刚转完,车还没走够距离。
                 // 这时候视觉再喊弯,多半是同一个弯还没从画面里退出去 —— 当直道走,不转。

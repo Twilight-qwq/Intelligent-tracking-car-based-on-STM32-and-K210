@@ -67,8 +67,12 @@
 #define GYRO_CHIP_RANGE_500_VALUE           0x08
 #define GYRO_COUNTS_PER_DEGREE_PER_SECOND   65.5f
 
-/* 调用周期：5 毫秒 = 0.005 秒 */
+/* 调用周期：5 毫秒 = 0.005 秒。只在第一次调用时当默认值用，
+ * 之后一律用「这次和上次隔了多少毫秒」的真实间隔。 */
 #define GYRO_SAMPLE_PERIOD_SECONDS          0.005f
+
+/* 真实间隔的上限：超过这个就当卡死过，按 50 毫秒算，别把一大段时间乘进角度里 */
+#define GYRO_DT_MAX_MS                      50u
 
 /* 死区：转速绝对值小于这个数，就当"没在转"，不往角度里加。
  * 为什么需要：零偏切得不干净时，静止也会以 0.476 度/秒慢慢往上爬
@@ -100,6 +104,8 @@ static uint16_t Gyro_ZeroBiasSampleCount   = 0;
 static uint8_t  Gyro_ZeroBiasReady         = 0;
 static uint8_t  Gyro_BiasSkipCount         = 0;      /* 还要丢掉多少个上电初期的样本 */
 static uint16_t Gyro_ReadErrorCount        = 0;
+static uint32_t Gyro_LastUpdateMs          = 0;      /* 上次调用 Gyro_Update 的时刻 */
+static uint8_t  Gyro_DtReady               = 0;      /* 1 = 已经记过时刻，可以算真实间隔了 */
 
 /* ==================== 软件 I2C 的引脚操作 ==================== */
 
@@ -360,18 +366,42 @@ void Gyro_Init(void)
 /* 每 5 毫秒调一次：前 1 秒测零偏，之后按 Z 轴积分
  * 一次读 6 个字节把 X/Y/Z 全拿回来：模块要是侧着装，绕竖直轴的转动
  * 就落在 X 或 Y 上，只读 Z 会永远是 0（2026-11-21 踩过这个坑）。 */
-void Gyro_Update(void)
+void Gyro_Update(uint32_t current_ms)
 {
 	uint8_t axis_raw_bytes[6];
 	int16_t axis_x_raw;
 	int16_t axis_y_raw;
 	int16_t axis_z_raw;
 	float   rate_degrees_per_second;
+	float   sample_period_seconds;
+	uint32_t delta_ms;
 
 	if (!Gyro_IsAvailable)
 	{
 		return;
 	}
+
+	/* 真实周期：这次调用和上次隔了多少毫秒。                 2026-11-21 改
+	 * 为什么不再固定乘 0.005：主循环偶尔会被 Debug_log 阻塞约 2 毫秒
+	 *   （100 毫秒发一次 24 字节，115200 下约 2 毫秒），那一轮的间隔就变成约 7 毫秒。
+	 *   固定按 5 毫秒算，这一帧的转速贡献就低估约 28%；
+	 *   一个 374 毫秒的弯里来几次，累计少算 1 度多，车会转过头。
+	 * 代价：一次减法，不占额外时间。 */
+	if (Gyro_DtReady)
+	{
+		delta_ms = current_ms - Gyro_LastUpdateMs;
+		if (delta_ms > GYRO_DT_MAX_MS)
+		{
+			delta_ms = GYRO_DT_MAX_MS;
+		}
+		sample_period_seconds = (float)delta_ms * 0.001f;
+	}
+	else
+	{
+		sample_period_seconds = GYRO_SAMPLE_PERIOD_SECONDS;
+		Gyro_DtReady = 1;
+	}
+	Gyro_LastUpdateMs = current_ms;
 
 	if (!GyroChip_ReadRegisters(GYRO_CHIP_REG_AXIS_START, axis_raw_bytes, 6))
 	{
@@ -418,7 +448,7 @@ void Gyro_Update(void)
 	if ((rate_degrees_per_second > GYRO_RATE_DEADBAND_DPS)
 	    || (rate_degrees_per_second < -GYRO_RATE_DEADBAND_DPS))
 	{
-		Gyro_TotalAngleDegrees += rate_degrees_per_second * GYRO_SAMPLE_PERIOD_SECONDS;
+		Gyro_TotalAngleDegrees += rate_degrees_per_second * sample_period_seconds;
 	}
 }
 
