@@ -689,6 +689,16 @@
               <FileType>5</FileType>
               <FilePath>.\MiddleLayer\Protocol.h</FilePath>
             </File>
+            <File>
+              <FileName>Delay.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\MiddleLayer\Delay.c</FilePath>
+            </File>
+            <File>
+              <FileName>Delay.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\MiddleLayer\Delay.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

@@ -1,4 +1,5 @@
 #include "stm32f10x.h"
+#include "Delay.h"
 #include "Gyro.h"
 
 /* =========================================================================
@@ -346,18 +347,13 @@ static uint8_t GyroChip_ReadRegisters(uint8_t start_register, uint8_t *read_buff
 	return 1;
 }
 
-/* 简单毫秒延时：72MHz 下大约 12000 次空循环 = 1 毫秒 */
-static void Gyro_WaitMilliseconds(uint16_t delay_milliseconds)
-{
-	volatile uint32_t loop_counter;
-	uint32_t total_loops;
-
-	total_loops = (uint32_t)delay_milliseconds * 12000u;
-
-	for (loop_counter = 0; loop_counter < total_loops; loop_counter++)
-	{
-	}
-}
+/* 毫秒延时用 MiddleLayer 的 Delay_ms（SysTick 轮询，精确到微秒）。
+ * 2026-11-21 换掉原来自己写的空循环：那个"1 毫秒 = 12000 次空循环"是估的，
+ * 误差可能 30%，而且改编译优化等级就变。现在只在 Gyro_Init 里用，
+ * 不在主循环、不在 I2C 位时序里，所以不会占跑车时的时间。
+ * 注意：Delay_us 千万不要拿去替换 SoftI2C_WaitOneBit()——
+ *   那个位延时是 25 次空循环（约 1 微秒），换成 Delay_us 要写 4 个 SysTick 寄存器，
+ *   读一次 6 字节有 90 个位，每次读会从 0.9 毫秒涨到 2~3 毫秒，5 毫秒周期直接撑爆。 */
 
 /* ==================== 对外接口 ==================== */
 
@@ -367,7 +363,7 @@ void Gyro_Init(void)
 	uint8_t who_am_i_value = 0;
 	uint8_t retry_times;
 
-	Gyro_WaitMilliseconds(GYRO_CHIP_POWER_ON_WAIT_MS);
+	Delay_ms(GYRO_CHIP_POWER_ON_WAIT_MS);
 	SoftI2C_InitPins();
 	SoftI2C_BusRecovery();      /* 万一上电时从机拉着 SDA，先把总线放干净 */
 
@@ -383,7 +379,7 @@ void Gyro_Init(void)
 		}
 
 		/* 没认出来就等一会儿再试 */
-		Gyro_WaitMilliseconds(GYRO_CHIP_DETECT_RETRY_MS);
+		Delay_ms(GYRO_CHIP_DETECT_RETRY_MS);
 	}
 
 	Gyro_WhoAmIValue = who_am_i_value;
@@ -394,13 +390,13 @@ void Gyro_Init(void)
 	}
 
 	GyroChip_WriteRegister(GYRO_CHIP_REG_POWER_MGMT,  GYRO_CHIP_POWER_ON_VALUE);
-	Gyro_WaitMilliseconds(10);
+	Delay_ms(10);
 	GyroChip_WriteRegister(GYRO_CHIP_REG_SAMPLE_RATE, GYRO_CHIP_SAMPLE_RATE_DIV);
 	GyroChip_WriteRegister(GYRO_CHIP_REG_LOW_PASS,    GYRO_CHIP_LOW_PASS_VALUE);
 	GyroChip_WriteRegister(GYRO_CHIP_REG_GYRO_CONFIG, GYRO_CHIP_RANGE_500_VALUE);
 
 	/* 配置完再等一会儿，让芯片彻底稳下来，才开始采零偏 */
-	Gyro_WaitMilliseconds(GYRO_CHIP_STARTUP_WAIT_MS);
+	Delay_ms(GYRO_CHIP_STARTUP_WAIT_MS);
 
 	Gyro_BiasSkipCount = GYRO_BIAS_SKIP_SAMPLES;
 }
