@@ -162,7 +162,14 @@ uint32_t Service_Clock(void)
 #define MPU_REG_SMPLRT    0x19
 #define MPU_REG_CONFIG    0x1A
 #define MPU_REG_GYROCFG   0x1B
-#define MPU_REG_GYRO_ZOUT 0x43
+/* 陀螺仪三轴数据从 0x43 开始，连续 6 个字节：
+ *   0x43/0x44 = X 轴高/低字节    0x45/0x46 = Y 轴    0x47/0x48 = Z 轴
+ * 出处：本地手册 RM-MPU-6000A 寄存器表（_手册简化/text/RM-MPU-6000A.p1-50.dump.md
+ *       第 568~596 行：43=GYRO_XOUT_H、45=GYRO_YOUT_H、47=GYRO_ZOUT_H）
+ * 2026-11-21 修正：原来这里写的是 0x43，那是【X 轴】不是 Z 轴。
+ *   表现就是"手转 90° 角度几乎不动"（用户实测只变了 3 度）——
+ *   因为模块平放时 X 轴感受不到绕竖直轴的转动。 */
+#define MPU_REG_GYRO_XYZ  0x43     /* 三轴起始地址：一次读 6 字节拿全 X/Y/Z */
 #define MPU_REG_PWRMGMT   0x6B
 #define MPU_REG_WHOAMI    0x75
 
@@ -175,8 +182,10 @@ uint32_t Service_Clock(void)
 
 #define GYRO_LSB_PER_DPS  131.0f   /* ±250°/s 档的分辨率，两者相同 */
 
-static uint8_t  Gyro_WhoAmI   = 0;     /* 读回来的 0x75 寄存器，应该是 0x68 */
+static uint8_t  Gyro_WhoAmI   = 0;     /* 读回来的 0x75 寄存器：ICM-20602 = 0x12(18)，MPU6050 = 0x68(104) */
 static uint8_t  Gyro_Ok       = 0;     /* 1 = 模块活着 */
+static int16_t  Gyro_Xraw     = 0;     /* X 轴原始读数（2026-11-21 台架诊断用） */
+static int16_t  Gyro_Yraw     = 0;     /* Y 轴原始读数（2026-11-21 台架诊断用） */
 static int16_t  Gyro_Zraw     = 0;     /* Z 轴原始读数 */
 static float    Gyro_Bias     = 0.0f;  /* 静止零偏 */
 static float    Gyro_Angle    = 0.0f;  /* 累计角度（度） */
@@ -334,20 +343,28 @@ void Gyro_Init(void)
 	MPU_WriteReg(MPU_REG_GYROCFG, 0x00);/* ±250°/s */
 }
 
-/* 每 5 毫秒调一次：前 1 秒测零偏，之后开始积分 */
+/* 每 5 毫秒调一次：前 1 秒测零偏，之后开始积分
+ * 2026-11-21：改成一次读 6 个字节，把 X/Y/Z 三个轴全拿回来。
+ *   为什么要三个轴：不知道模块在车上是怎么装的，如果它侧着装，
+ *   绕竖直轴的转动就落在 X 或 Y 上，读 Z 永远是 0。
+ *   台架模式把三个轴都显示出来，转一下车就能看出哪个轴在动。 */
 void Gyro_Update(void)
 {
-	uint8_t buf[2];
-	int16_t z;
+	uint8_t buf[6];
+	int16_t x, y, z;
 
 	if(!Gyro_Ok) { return; }
 
-	if(!MPU_ReadRegs(MPU_REG_GYRO_ZOUT, buf, 2))
+	if(!MPU_ReadRegs(MPU_REG_GYRO_XYZ, buf, 6))
 	{
 		if(Gyro_ErrCnt < 60000) { Gyro_ErrCnt++; }
 		return;
 	}
-	z = (int16_t)(((uint16_t)buf[0] << 8) | buf[1]);
+	x = (int16_t)(((uint16_t)buf[0] << 8) | buf[1]);   /* 0x43/0x44 = X 轴 */
+	y = (int16_t)(((uint16_t)buf[2] << 8) | buf[3]);   /* 0x45/0x46 = Y 轴 */
+	z = (int16_t)(((uint16_t)buf[4] << 8) | buf[5]);   /* 0x47/0x48 = Z 轴 */
+	Gyro_Xraw = x;
+	Gyro_Yraw = y;
 	Gyro_Zraw = z;
 
 	if(!Gyro_BiasDone)
@@ -656,19 +673,23 @@ static void Task_SendTelemetry(void)
     if(Calib_Mode)//台架标定:五个通道换成"累计值", 方便读数
     {
 #if GYRO_BENCH_TEST
-        /* 2026-11-21 陀螺仪台架测试：
-         *   ch1 = WHO_AM_I，应该是 104（0x68）；0 或 255 说明模块没接上
-         *   ch2 = 陀螺仪 Z 轴原始读数（静止时应该在一个固定值附近小幅抖动）
-         *   ch3 = 累计角度（度）。手把车转 90°，这里应该走到 ±90 左右
-         *   ch4 = 零偏（上电后 1 秒自动测出来）
-         *   ch5 = 读失败次数，一直是 0 才正常
-         */
-        data.target_left  = (float)Gyro_WhoAmI;
-        data.actual_left  = (float)Gyro_Zraw;
-        data.target_right = Gyro_Angle;
-        data.actual_right = Gyro_Bias;
-        data.error        = (float)Gyro_ErrCnt;
+        /* 2026-11-21 陀螺仪台架测试（诊断版：找竖直轴）：
+         *   I0 = WHO_AM_I，应该是 18
+         *   I1 = X 轴原始读数
+         *   I2 = Y 轴原始读数
+         *   I3 = Z 轴原始读数
+         *   I4 = 累计角度（度，按 Z 轴积分）
+         * 为什么要看三个轴：手转 90° 时，只有和竖直轴对齐的那一个
+         *   会从 160 左右冲到上万（90度/秒 × 131 = 11790），
+         *   另外两个几乎不动。哪个动了，车里就用哪个轴算角度。 */
+        data.target_left  = (float)Gyro_WhoAmI;      /* I0 */
+        data.actual_left  = (float)Gyro_Xraw;        /* I1 */
+        data.target_right = (float)Gyro_Yraw;        /* I2 */
+        data.actual_right = (float)Gyro_Zraw;        /* I3 */
+        data.error        = Gyro_Angle;              /* I4 */
         (void)Calib_Frozen;                          /* 这个模式下用不到，避免"设了没用"的警告 */
+        (void)Gyro_Bias;                             /* 这版暂时不显示零偏 */
+        (void)Gyro_ErrCnt;                           /* 这版暂时不显示读失败次数 */
 #else
         data.target_left  = Calib_Left;              // ch1 左轮累计 counts
         data.actual_left  = Calib_Right;             // ch2 右轮累计 counts
