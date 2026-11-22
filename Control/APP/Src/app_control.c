@@ -359,6 +359,14 @@ static uint8_t Task_CornerDecide(uint8_t state)
 			Corner_ArmDist = 0.0f;
 			Corner_Accum   = 0.0f;
 		}
+		/* 正在转弯（包括里程强转）时绝不允许落到 PD —— 否则每 30 毫秒把转弯差速覆盖掉，
+		 * 车就直着冲过弯口。视觉在弯里本来就会短暂丢帧（47.5% 的帧好行=0），
+		 * 这一条同时也防住了「转着转着视觉哑火」那种情况。 */
+		if (Corner_Active)
+		{
+			Corner_SetTarget(CORNER_T_TURN);
+			return 1;
+		}
 		return 0;                       /* 不接管，交给 PD */
 	}
 
@@ -492,8 +500,12 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 			 * 为什么在这里清：等里程那 20 厘米里车会小幅画龙，
 			 * 角度从那时开始累的话会带进弯里；从"真正开始转"起算才干净。 */
 			Gyro_ResetTotalAngle();//清理角度开始转弯
-		Corner_SetTarget(CORNER_T_TURN);   // 强转也要真的按转弯差速走
-		return;
+
+			/* 开转这一刻就把目标切成转弯差速，不等下一个 30 毫秒。
+			 * 旧代码要等 30ms 任务看到 Corner_Active 才切，那最多 30 毫秒里车还按
+			 * TURN_ARM_SPEED 直行（15 档 × 30ms ≈ 1.3 厘米）。这是本次唯一的
+			 * 有意行为变化，实车对比时留意。 */
+			Corner_SetTarget(CORNER_T_TURN);
 		}
 	}
 }
@@ -801,6 +813,7 @@ static void Task_30ms_Control(VisionData_t *vis_data)
         Corner_TurnStartMileage = Corner_SegMileage;   /* 调试：强转也记开转里程 */
         Turn_TargetAngle_Deg = Turn_AngleDeg[Corner_Index];
         Gyro_ResetTotalAngle();
+        Corner_SetTarget(CORNER_T_TURN);   /* 强转第一拍就按转弯差速走 */
     }
 #endif
 
