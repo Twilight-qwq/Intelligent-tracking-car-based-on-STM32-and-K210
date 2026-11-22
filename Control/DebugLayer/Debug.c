@@ -9,8 +9,8 @@
 #if DEBUG_ENABLE
 
 
-#define DEBUG_FLOAT_NUM 5
-#define DEBUG_TX_SIZE   (DEBUG_FLOAT_NUM * 4 + 4)  // 结果是 24 字节
+#define DEBUG_FLOAT_NUM 7
+#define DEBUG_TX_SIZE   (DEBUG_FLOAT_NUM * 4 + 4)  // 结果是 32 字节
 
 /* 用 DMA 还是轮询发波形（2026-11-21 加）
  * 1 = DMA：Debug_log 几微秒就返回，发送交给 DMA，不占主循环
@@ -24,7 +24,9 @@ typedef enum {
     CH_ACTUAL_LEFT,      //通道1:左轮实际速度
     CH_TARGET_RIGHT,     //通道2:右轮目标速度
     CH_ACTUAL_RIGHT,     //通道3:右轮实际速度
-    CH_ERROR             //通道4:视觉误差
+    CH_ERROR,            //通道4:视觉误差
+    CH_MILEAGE_ARM,      //通道5:视觉报弯那一刻的段内里程（厘米）
+    CH_MILEAGE_TURN      //通道6:开始转那一刻的段内里程（厘米）
 }DebugChannel_e;
 
 static uint8_t debug_tx_buf[DEBUG_TX_SIZE] = {0};
@@ -81,6 +83,8 @@ static void Debug_AnalyseData(debugdata_t *data,float *channels)
     channels[CH_TARGET_RIGHT]	= 	data->target_right;
     channels[CH_ACTUAL_RIGHT] 	= 	data->actual_right;
     channels[CH_ERROR] 			= 	data->error;
+    channels[CH_MILEAGE_ARM] 	= 	data->mileage_arm;
+    channels[CH_MILEAGE_TURN] 	= 	data->mileage_turn;
 }
 
 /* 轮询模式下的发送超时（DEBUG_USE_DMA = 0 时才会用到）

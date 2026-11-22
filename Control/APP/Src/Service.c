@@ -110,8 +110,23 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
   static const float Turn_AngleDeg[TURN_TABLE_SIZE]     = {  90.0f,  38.5f, 103.0f,  38.5f,  90.0f };
 #else
   #define TURN_TABLE_SIZE 3
-  /* 阈值单位：厘米，从「起点 / 上一个弯转完」算起。下面这三个是几何值，必须实测替换！ */
-  static const float Turn_ThresholdCm[TURN_TABLE_SIZE] = { 200.0f, 350.0f, 350.0f };
+  /* 阈值单位：厘米，从「起点 / 上一个弯转完」算起。
+   *
+   * 【2026-11-22 全部减去「外拐点偏移」】用户要求压小。
+   * 原来这三个数是照 Doc\赛道数据.md 量的，而那份文档写明「按外轮廓量」——
+   * 量到的是【外拐点的里程】。车跑的是车道中心线，两者沿行进方向差
+   *   20 × tan(角度÷2)      20 = 外线到中心线的横向距离
+   * 也就是：外拐点比中心线拐点靠前 20 厘米（90° 弯）/ 25.1 厘米（103° 弯）。
+   *
+   * 所以改法 = 每个阈值减去「那个弯自己的偏移」：
+   *   200 → 180   （90°，  减 20 × tan45°   = 20.0）
+   *   350 → 325   （103°， 减 20 × tan51.5° = 25.1 → 取 25）
+   *   350 → 330   （90°，  减 20.0 → 330）
+   * 现在这三个数的含义是「到中心线拐点（也就是拐角正方形的中心）的距离」。
+   *
+   * 还是没实测！等跑一圈拿到真实的「开始转那一刻的里程」，用那个数替换。
+   * 注意它同时是「信不信视觉报弯」的门禁中心（TURN_DIST_TOLERANCE_CM）。 */
+  static const float Turn_ThresholdCm[TURN_TABLE_SIZE] = { 180.0f, 325.0f, 330.0f };
   static const float Turn_AngleDeg[TURN_TABLE_SIZE]     = {  90.0f, 103.0f,  90.0f };
 #endif
 
@@ -175,6 +190,18 @@ static uint32_t Corner_DoneTick = 0;   // 转完的时刻, 供"限时交回视�
  * 少一个变量、少一处会不一致的地方。 */
 static uint8_t  Corner_Index      = 0;      // 正要去第几个要甩的弯(查表下标)
 static float    Corner_SegMileage = 0.0f;   // 从上一个弯转完到现在走了多少厘米
+
+/* ===== 调试：锁存「报弯里程」和「开转里程」      2026-11-22 新增 =====
+ * 为什么要锁存，而不是发遥测时现取：
+ *   遥测 100 毫秒发一帧，车速 70 厘米/秒时一帧就走了 7 厘米；
+ *   而我们关心的转弯窗口本身只有 20 厘米宽 —— 现取会差出三分之一。
+ *   所以在事件那一瞬间把值存下来，之后保持不变，采样误差为 0。
+ * 跑一圈后在 VOFA+ 上看这两个通道，怎么判断：
+ *   ① 开转里程 − 报弯里程 应该 ≈ TURN_ARM_CM(20)。差得多，说明中间被别的条件拦过。
+ *   ② 拿「开转里程」和 Turn_ThresholdCm 比：差多少，阈值就该往前挪多少。
+ *   ③ 三个弯各看一次。三次的差值应该差不多；差得多说明里程刻度有问题。 */
+static float    Corner_ArmMileage       = 0.0f;  // 视觉报弯那一刻的段内里程（厘米）
+static float    Corner_TurnStartMileage = 0.0f;  // 真正开始转那一刻的段内里程（厘米）
 static float    Turn_TargetAngle_Deg = TURN_TARGET_ANGLE_DEG; // 本次转弯的目标角(度)
 
 static uint8_t  Indicator_Tick    = 0;   //闪烁计数
@@ -408,6 +435,9 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 			Corner_Active = 1;
 			Corner_Accum  = 0.0f;
 			Corner_Tick   = curr_ms;
+
+			/* 调试：把开转这一刻的段内里程锁存下来（见文件上方的说明） */
+			Corner_TurnStartMileage = Corner_SegMileage;
 
 			/* 从表里取出「这个弯该转多少度」。                    2026-11-21 新增
 			 * 直角 90 / 锐角 103 / 两个 38.5 的浅弯默认不甩（不在这张表里）。 */
@@ -644,6 +674,8 @@ static void Task_SendTelemetry(void)
         data.target_right = (float)Gyro_GetAxisYRaw();    /* I2 */
         data.actual_right = (float)Gyro_GetAxisZRaw();    /* I3 */
         data.error        = Gyro_GetTotalAngle();         /* I4 */
+        data.mileage_arm  = 0.0f;                         /* I5 台架模式下不用 */
+        data.mileage_turn = 0.0f;                         /* I6 台架模式下不用 */
         (void)Calib_Frozen;                          /* 这个模式下用不到，避免"设了没用"的警告 */
 #else
         data.target_left  = Calib_Left;              // ch1 左轮累计 counts
@@ -651,6 +683,8 @@ static void Task_SendTelemetry(void)
         data.target_right = Calib_Cm;                // ch3 里程(换算厘米) <- 和卷尺比这个
         data.actual_right = Calib_Frozen ? 1.0f : 0.0f;// ch4 =1 表示数值已锁定
         data.error        = 0.0f;                    // ch5 保留
+        data.mileage_arm  = 0.0f;                    // ch6 台架模式下不用
+        data.mileage_turn = 0.0f;                    // ch7 台架模式下不用
 #endif
     }
     else
@@ -660,6 +694,12 @@ static void Task_SendTelemetry(void)
         data.target_right = target_right;
         data.actual_right = actual_right;
         data.error        = last_vision_error; // 使用刚才记录的误差
+        /* 这两路是转弯点标定用的锁存值（不是实时里程）：
+         *   报弯里程 = 视觉说"有弯"那一刻的段内里程
+         *   开转里程 = 真正开始转那一刻的段内里程
+         * 跑一圈看这两个数，就知道 TURN_ARM_CM 和 Turn_ThresholdCm 该填多少。 */
+        data.mileage_arm  = Corner_ArmMileage;
+        data.mileage_turn = Corner_TurnStartMileage;
     }
     Debug_log(&data);
 }
@@ -721,6 +761,7 @@ static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
         Corner_Active = 1;
         Corner_Accum  = 0.0f;
         Corner_Tick   = Service_Clock();
+        Corner_TurnStartMileage = Corner_SegMileage;   /* 调试：强转也记开转里程 */
         Turn_TargetAngle_Deg = Turn_AngleDeg[Corner_Index];
         Gyro_ResetTotalAngle();
     }
@@ -784,6 +825,8 @@ static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
 #endif
 
             Corner_Armed = 1;
+            /* 调试：记下视觉报弯这一刻的段内里程（这一帧已经被门禁放行） */
+            Corner_ArmMileage = Corner_SegMileage;
             target_left  = TURN_ARM_SPEED;
             target_right = TURN_ARM_SPEED;
             return;
