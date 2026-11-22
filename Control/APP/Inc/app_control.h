@@ -1,20 +1,7 @@
 ﻿#ifndef __APP_CONTROL_H
 #define __APP_CONTROL_H
 
-#include "bsp_encoder.h"
-#include "bsp_motor.h"
-#include "bsp_key.h"//后面删掉
-#include "bsp_voice.h"
-#include "bsp_bluetooth.h"
-#include "bsp_receiverk210.h"
-#include "bsp_systimer.h"
-#include "mid_pid.h"
-#include "mid_protocol.h"
-#include "Debug.h"
-#include "bsp_watchdog.h"
-#include "bsp_indicatorled.h"
-#include "bsp_gyro.h"
-
+#include <stdint.h>
 void App_Init(void);					//初始化
 void AppTask_Idle(void);				//喂狗
 void AppTask_5ms(uint32_t curr_ms);  	//内环速度环控制
