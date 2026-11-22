@@ -1,5 +1,5 @@
-#ifndef __PID_H
-#define __PID_H
+#ifndef __MID_PID_H
+#define __MID_PID_H
 #include <stdint.h>
 
 

@@ -1,5 +1,5 @@
 #include "stm32f10x.h"
-#include "WatchDog.h"
+#include "bsp_watchdog.h"
 
 void WatchDog_Init(void)
 {

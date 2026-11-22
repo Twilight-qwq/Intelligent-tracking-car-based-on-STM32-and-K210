@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <math.h>
-#include "PID.h"
+#include "mid_pid.h"
 /* ==================== 速度环 ==================== */
 /* 功能：初始化速度环PI
  * 参数1：速度环结构体指针

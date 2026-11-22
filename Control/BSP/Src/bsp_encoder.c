@@ -1,5 +1,5 @@
-﻿#include "stm32f10x.h"
-#include "Encoder.h"
+#include "stm32f10x.h"
+#include "bsp_encoder.h"
 
 /* ==================== 引脚宏定义 ==================== */
 /* 左编码器：TIM2 部分重映射1 -> CH1=PA15, CH2=PB3

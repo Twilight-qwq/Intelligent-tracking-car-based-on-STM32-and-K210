@@ -1,6 +1,6 @@
 #include "stm32f10x.h"
-#include "Delay.h"
-#include "Gyro.h"
+#include "mid_delay.h"
+#include "bsp_gyro.h"
 
 /* =========================================================================
  * 陀螺仪 ICM-20602（六轴，软件 I2C，SCL = PB0，SDA = PB1）

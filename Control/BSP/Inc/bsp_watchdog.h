@@ -1,5 +1,5 @@
-#ifndef __WATCHDOG_H
-#define __WATCHDOG_H
+#ifndef __BSP_WATCHDOG_H
+#define __BSP_WATCHDOG_H
 #include "stm32f10x.h"
 
 #define WATCHDOG_ENABLE		0

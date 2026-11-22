@@ -1,5 +1,5 @@
-#ifndef __GYRO_H
-#define __GYRO_H
+#ifndef __BSP_GYRO_H
+#define __BSP_GYRO_H
 #include "stm32f10x.h"
 
 /* =========================================================================

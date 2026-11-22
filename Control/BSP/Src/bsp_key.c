@@ -1,4 +1,4 @@
-﻿#include "key.h"
+#include "bsp_key.h"
 
 #define KEY_CLK             RCC_APB2Periph_GPIOA
 #define KEY_PORT            GPIOA

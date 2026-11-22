@@ -1,5 +1,5 @@
-﻿#include "stm32f10x.h"
-#include "BlueTooth.h"
+#include "stm32f10x.h"
+#include "bsp_bluetooth.h"
 //缩写:bt -- bluetooth
 
 #define BT_QUEUE_SIZE 	32					//蓝牙环形队列大小(蓝牙调参)

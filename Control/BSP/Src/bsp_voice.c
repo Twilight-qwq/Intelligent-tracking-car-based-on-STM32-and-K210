@@ -1,6 +1,6 @@
 #include "stm32f10x.h"
-#include "Voice.h"
-#include "Protocol.h"
+#include "bsp_voice.h"
+#include "mid_protocol.h"
 
 
 /* =========================================================================

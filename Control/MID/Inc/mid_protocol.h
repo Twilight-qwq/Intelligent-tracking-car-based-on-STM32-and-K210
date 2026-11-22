@@ -1,5 +1,5 @@
-#ifndef __PROTOCOL_H
-#define __PROTOCOL_H
+#ifndef __MID_PROTOCOL_H
+#define __MID_PROTOCOL_H
 #include "stm32f10x.h"
 
 #define FRAME_HEADER        0xAA  //统一帧头

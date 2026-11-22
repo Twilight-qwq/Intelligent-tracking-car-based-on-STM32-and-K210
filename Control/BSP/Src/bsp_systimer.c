@@ -1,6 +1,6 @@
-﻿//时间戳模块
+//时间戳模块
 #include "stm32f10x.h"
-#include "SysTimer.h"
+#include "bsp_systimer.h"
 
 volatile uint32_t SysTicks;
 

@@ -1,5 +1,5 @@
-﻿#ifndef __INDICATORLED_H
-#define __INDICATORLED_H
+#ifndef __BSP_INDICATORLED_H
+#define __BSP_INDICATORLED_H
 
 #include "stm32f10x.h"
 

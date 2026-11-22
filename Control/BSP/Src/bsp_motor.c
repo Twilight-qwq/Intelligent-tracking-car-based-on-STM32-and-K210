@@ -1,5 +1,5 @@
-﻿#include "stm32f10x.h"
-#include "Motor.h"
+#include "stm32f10x.h"
+#include "bsp_motor.h"
 /* ==================== 引脚宏定义 ==================== */
 // 时钟
 #define MOTOR_GPIO_CLK          (RCC_APB2Periph_GPIOA|RCC_APB2Periph_GPIOB)

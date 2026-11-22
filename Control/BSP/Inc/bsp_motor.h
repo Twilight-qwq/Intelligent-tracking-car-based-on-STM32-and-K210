@@ -1,5 +1,5 @@
-﻿#ifndef __MOTOR_H
-#define __MOTOR_H
+#ifndef __BSP_MOTOR_H
+#define __BSP_MOTOR_H
 #include "stm32f10x.h"
 
 #define MOTOR_DUTY_FULLSCALE	1000	//占空比指令满量程（‰），对应100%占空比

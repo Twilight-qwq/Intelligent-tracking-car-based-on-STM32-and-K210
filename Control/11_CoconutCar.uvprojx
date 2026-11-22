@@ -680,14 +680,24 @@
           <GroupName>APP</GroupName>
           <Files>
             <File>
-              <FileName>Service.c</FileName>
+              <FileName>app_control.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\APP\Src\Service.c</FilePath>
+              <FilePath>.\APP\Src\app_control.c</FilePath>
             </File>
             <File>
-              <FileName>Service.h</FileName>
+              <FileName>app_control.h</FileName>
               <FileType>5</FileType>
-              <FilePath>.\APP\Inc\Service.h</FilePath>
+              <FilePath>.\APP\Inc\app_control.h</FilePath>
+            </File>
+            <File>
+              <FileName>app_scheduler.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\APP\Src\app_scheduler.c</FilePath>
+            </File>
+            <File>
+              <FileName>app_scheduler.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\APP\Inc\app_scheduler.h</FilePath>
             </File>
           </Files>
         </Group>
@@ -695,34 +705,34 @@
           <GroupName>MID</GroupName>
           <Files>
             <File>
-              <FileName>Protocol.c</FileName>
+              <FileName>mid_protocol.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\MID\Src\Protocol.c</FilePath>
+              <FilePath>.\MID\Src\mid_protocol.c</FilePath>
             </File>
             <File>
-              <FileName>Protocol.h</FileName>
+              <FileName>mid_protocol.h</FileName>
               <FileType>5</FileType>
-              <FilePath>.\MID\Inc\Protocol.h</FilePath>
+              <FilePath>.\MID\Inc\mid_protocol.h</FilePath>
             </File>
             <File>
-              <FileName>Delay.c</FileName>
+              <FileName>mid_delay.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\MID\Src\Delay.c</FilePath>
+              <FilePath>.\MID\Src\mid_delay.c</FilePath>
             </File>
             <File>
-              <FileName>Delay.h</FileName>
+              <FileName>mid_delay.h</FileName>
               <FileType>5</FileType>
-              <FilePath>.\MID\Inc\Delay.h</FilePath>
+              <FilePath>.\MID\Inc\mid_delay.h</FilePath>
             </File>
             <File>
-              <FileName>PID.c</FileName>
+              <FileName>mid_pid.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\MID\Src\PID.c</FilePath>
+              <FilePath>.\MID\Src\mid_pid.c</FilePath>
             </File>
             <File>
-              <FileName>PID.h</FileName>
+              <FileName>mid_pid.h</FileName>
               <FileType>5</FileType>
-              <FilePath>.\MID\Inc\PID.h</FilePath>
+              <FilePath>.\MID\Inc\mid_pid.h</FilePath>
             </File>
           </Files>
         </Group>
@@ -730,104 +740,104 @@
           <GroupName>BSP</GroupName>
           <Files>
             <File>
-              <FileName>BlueTooth.c</FileName>
+              <FileName>bsp_bluetooth.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\BSP\Src\BlueTooth.c</FilePath>
+              <FilePath>.\BSP\Src\bsp_bluetooth.c</FilePath>
             </File>
             <File>
-              <FileName>BlueTooth.h</FileName>
+              <FileName>bsp_bluetooth.h</FileName>
               <FileType>5</FileType>
-              <FilePath>.\BSP\Inc\BlueTooth.h</FilePath>
+              <FilePath>.\BSP\Inc\bsp_bluetooth.h</FilePath>
             </File>
             <File>
-              <FileName>Encoder.c</FileName>
+              <FileName>bsp_encoder.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\BSP\Src\Encoder.c</FilePath>
+              <FilePath>.\BSP\Src\bsp_encoder.c</FilePath>
             </File>
             <File>
-              <FileName>Encoder.h</FileName>
+              <FileName>bsp_encoder.h</FileName>
               <FileType>5</FileType>
-              <FilePath>.\BSP\Inc\Encoder.h</FilePath>
+              <FilePath>.\BSP\Inc\bsp_encoder.h</FilePath>
             </File>
             <File>
-              <FileName>Gyro.c</FileName>
+              <FileName>bsp_gyro.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\BSP\Src\Gyro.c</FilePath>
+              <FilePath>.\BSP\Src\bsp_gyro.c</FilePath>
             </File>
             <File>
-              <FileName>Gyro.h</FileName>
+              <FileName>bsp_gyro.h</FileName>
               <FileType>5</FileType>
-              <FilePath>.\BSP\Inc\Gyro.h</FilePath>
+              <FilePath>.\BSP\Inc\bsp_gyro.h</FilePath>
             </File>
             <File>
-              <FileName>IndicatorLED.c</FileName>
+              <FileName>bsp_indicatorled.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\BSP\Src\IndicatorLED.c</FilePath>
+              <FilePath>.\BSP\Src\bsp_indicatorled.c</FilePath>
             </File>
             <File>
-              <FileName>IndicatorLED.h</FileName>
+              <FileName>bsp_indicatorled.h</FileName>
               <FileType>5</FileType>
-              <FilePath>.\BSP\Inc\IndicatorLED.h</FilePath>
+              <FilePath>.\BSP\Inc\bsp_indicatorled.h</FilePath>
             </File>
             <File>
-              <FileName>Key.c</FileName>
+              <FileName>bsp_key.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\BSP\Src\Key.c</FilePath>
+              <FilePath>.\BSP\Src\bsp_key.c</FilePath>
             </File>
             <File>
-              <FileName>Key.h</FileName>
+              <FileName>bsp_key.h</FileName>
               <FileType>5</FileType>
-              <FilePath>.\BSP\Inc\Key.h</FilePath>
+              <FilePath>.\BSP\Inc\bsp_key.h</FilePath>
             </File>
             <File>
-              <FileName>Motor.c</FileName>
+              <FileName>bsp_motor.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\BSP\Src\Motor.c</FilePath>
+              <FilePath>.\BSP\Src\bsp_motor.c</FilePath>
             </File>
             <File>
-              <FileName>Motor.h</FileName>
+              <FileName>bsp_motor.h</FileName>
               <FileType>5</FileType>
-              <FilePath>.\BSP\Inc\Motor.h</FilePath>
+              <FilePath>.\BSP\Inc\bsp_motor.h</FilePath>
             </File>
             <File>
-              <FileName>ReceiverK210.c</FileName>
+              <FileName>bsp_receiverk210.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\BSP\Src\ReceiverK210.c</FilePath>
+              <FilePath>.\BSP\Src\bsp_receiverk210.c</FilePath>
             </File>
             <File>
-              <FileName>ReceiverK210.h</FileName>
+              <FileName>bsp_receiverk210.h</FileName>
               <FileType>5</FileType>
-              <FilePath>.\BSP\Inc\ReceiverK210.h</FilePath>
+              <FilePath>.\BSP\Inc\bsp_receiverk210.h</FilePath>
             </File>
             <File>
-              <FileName>SysTimer.c</FileName>
+              <FileName>bsp_systimer.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\BSP\Src\SysTimer.c</FilePath>
+              <FilePath>.\BSP\Src\bsp_systimer.c</FilePath>
             </File>
             <File>
-              <FileName>SysTimer.h</FileName>
+              <FileName>bsp_systimer.h</FileName>
               <FileType>5</FileType>
-              <FilePath>.\BSP\Inc\SysTimer.h</FilePath>
+              <FilePath>.\BSP\Inc\bsp_systimer.h</FilePath>
             </File>
             <File>
-              <FileName>Voice.c</FileName>
+              <FileName>bsp_voice.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\BSP\Src\Voice.c</FilePath>
+              <FilePath>.\BSP\Src\bsp_voice.c</FilePath>
             </File>
             <File>
-              <FileName>Voice.h</FileName>
+              <FileName>bsp_voice.h</FileName>
               <FileType>5</FileType>
-              <FilePath>.\BSP\Inc\Voice.h</FilePath>
+              <FilePath>.\BSP\Inc\bsp_voice.h</FilePath>
             </File>
             <File>
-              <FileName>WatchDog.c</FileName>
+              <FileName>bsp_watchdog.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\BSP\Src\WatchDog.c</FilePath>
+              <FilePath>.\BSP\Src\bsp_watchdog.c</FilePath>
             </File>
             <File>
-              <FileName>WatchDog.h</FileName>
+              <FileName>bsp_watchdog.h</FileName>
               <FileType>5</FileType>
-              <FilePath>.\BSP\Inc\WatchDog.h</FilePath>
+              <FilePath>.\BSP\Inc\bsp_watchdog.h</FilePath>
             </File>
           </Files>
         </Group>

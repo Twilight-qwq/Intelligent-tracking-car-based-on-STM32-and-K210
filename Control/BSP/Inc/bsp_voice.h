@@ -1,5 +1,5 @@
-#ifndef __VOICE_H
-#define __VOICE_H
+#ifndef __BSP_VOICE_H
+#define __BSP_VOICE_H
 #include "stm32f10x.h"
 
 /* 语音模块（USART3，PB10 = TX / PB11 = RX，默认 9600 波特率）
