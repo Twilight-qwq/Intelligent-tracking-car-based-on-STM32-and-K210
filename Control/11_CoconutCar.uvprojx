@@ -689,16 +689,6 @@
               <FileType>5</FileType>
               <FilePath>.\APP\Inc\app_control.h</FilePath>
             </File>
-            <File>
-              <FileName>app_scheduler.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\APP\Src\app_scheduler.c</FilePath>
-            </File>
-            <File>
-              <FileName>app_scheduler.h</FileName>
-              <FileType>5</FileType>
-              <FilePath>.\APP\Inc\app_scheduler.h</FilePath>
-            </File>
           </Files>
         </Group>
         <Group>

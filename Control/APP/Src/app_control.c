@@ -1,4 +1,4 @@
-#include <stdint.h>
+﻿#include <stdint.h>
 #include <stdlib.h>
 #include <math.h>
 #include "app_control.h"
@@ -13,8 +13,10 @@ static void Task_Indicate(void);
 static void CarRun_Set(uint8_t run);
 static uint8_t Task_EncoderCalib(void);
 
-/* 四个任务的闹钟（task_last_5ms 等）已经挪到 app_scheduler.c ——
- * 这一层只负责「一拍该干什么」，节拍由调度层管。 */
+static uint32_t task_last_5ms = 0;
+static uint32_t task_last_10ms = 0;
+static uint32_t task_last_30ms = 0;
+static uint32_t task_last_100ms = 0;
 
 static pid_velocity_t pid_v_left;
 static pid_velocity_t pid_v_right;
@@ -72,7 +74,7 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
  */
 #define TURN_USE_MILEAGE_TABLE  1
 #define TURN_USE_38_BENDS       0
-#define TURN_ALLOW_FORCE        1
+#define TURN_ALLOW_FORCE        0
 
 /* 死区：里程离本段阈值太远，就当视觉在报假信号，不转。
  * 2026-11-22 从「对称 40」改成「左 30 / 右 10」。为什么两边不能一样：
@@ -339,7 +341,7 @@ uint32_t Service_Clock(void)
 #define TELEMETRY_MODE    0
 
 
-void AppControl_Init(void)
+void Service_Init(void)
 {
 	NVIC_PriorityGroupConfig(NVIC_PriorityGroup_2);
 	Encoder_Init();
@@ -366,6 +368,12 @@ void AppControl_Init(void)
 }
 
 
+void ServiceTask_Idle(void)
+{
+	WatchDog_FeedDog();
+}
+
+
 /* 台架：编码器里程标定（原来直接写在 5 毫秒任务里，2026-11-22 抽成函数）
  * 形参：无（用文件里的 actual_left / actual_right）
  * 返回：1 = 正在标定，调用者这一拍到此为止；0 = 没进标定模式，照常跑车
@@ -388,6 +396,8 @@ static uint8_t Task_EncoderCalib(void)
 	   (actual_right > 0.5f) || (actual_right < -0.5f))
 	{
 		// 有动作：解锁并继续累加
+		// (踩过的坑:以前"静止1秒就锁定",而一上电摆车时本来就是静止的,
+		//  于是程序上电1秒后就把自己锁死了,之后怎么推都是 0)
 		Calib_IdleMs = 0;
 		Calib_Frozen = 0;
 		Calib_Left  += actual_left;
@@ -397,18 +407,21 @@ static uint8_t Task_EncoderCalib(void)
 	else
 	{
 		Calib_IdleMs += 5;
-		// 只有「已经走过一段」之后，静止 1 秒才锁定
+		// 只有"已经走过一段"之后,静止 1 秒才锁定
 		if((Calib_IdleMs > 1000) && ((Calib_Left != 0.0f) || (Calib_Right != 0.0f)))
 		{
 			Calib_Frozen = 1;
 		}
 	}
-	Motor_SetDuty(0,0);	// 标定期间不驱动电机，可以随便推
-	return 1;			// 告诉 5 毫秒任务：这一拍别跑车了
+	Motor_SetDuty(0,0);	// 标定期间不驱动电机, 可以随便推
+	return 1;			// 告诉 5 毫秒任务:这一拍到此为止
 }
 
-void AppControl_5ms(uint32_t curr_ms)//内环速度环控制
+void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 {
+	if(curr_ms - task_last_5ms < 5) return;
+    task_last_5ms = curr_ms; //重置闹钟
+
 	Encoder_Update();
 	actual_left  = (float)Encoder_GetDeltaLeft();
 	actual_right = (float)Encoder_GetDeltaRight();
@@ -423,7 +436,7 @@ void AppControl_5ms(uint32_t curr_ms)//内环速度环控制
 	 *   某一轮会变长（2026-11-21 波形改 DMA 后，Debug_log 已经不再阻塞主循环）。 */
 	Gyro_Update(curr_ms);
 
-	/* 台架标定模式：只数轮子、不驱动电机。返回 1 说明正在标定，这一拍就到此为止。 */
+	/* 台架标定模式：只数轮子、不驱动电机。返回 1 说明这一拍别跑车。 */
 	if(Task_EncoderCalib()) return;
 
 	if(CarRun_State == 0) return;
@@ -499,8 +512,11 @@ void AppControl_5ms(uint32_t curr_ms)//内环速度环控制
 }
 
 
-void AppControl_30ms(void)//外环方向环控制
+void ServiceTask_30ms(uint32_t curr_ms)//外环方向环控制
 {
+	if(curr_ms - task_last_30ms < 30) return;
+    task_last_30ms = curr_ms;
+
     if(Calib_Mode) return;//台架标定模式不需要视觉
 
     // 停车时也要读视觉数据。
@@ -516,14 +532,21 @@ void AppControl_30ms(void)//外环方向环控制
 }
 
 
-void AppControl_10ms(uint32_t curr_ms)
+void ServiceTask_10ms(uint32_t curr_ms)
 {
+	if(curr_ms - task_last_10ms < 10) return;
+
+    task_last_10ms = curr_ms;
     Key_CheckRequest(curr_ms);
 }
 
 
-void AppControl_100ms(void)//开关控制与数据发送
+void ServiceTask_100ms(uint32_t curr_ms)//开关控制与数据发送
 {
+	
+    if(curr_ms - task_last_100ms < 100) return;
+    task_last_100ms = curr_ms;
+
     if(Calib_Mode)//台架标定模式:只管发波形,不处理启停、不做停车清理
     {
         Task_SendTelemetry();
