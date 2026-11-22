@@ -307,7 +307,7 @@ static uint8_t Corner_TurnAngleReached(void)
 	return 0;
 }
 
-uint32_t Service_Clock(void)
+uint32_t App_Clock(void)
 {
 	return SysTimer_GetTick();
 }
@@ -316,7 +316,7 @@ uint32_t Service_Clock(void)
  * 陀螺仪已拆到 HardwareLayer/Gyro.c + Gyro.h（2026-11-21 用户要求单独成文件）
  *
  * 这里只留「怎么用它」：
- *   Service_Init()     里调一次 Gyro_Init()
+ *   App_Init()     里调一次 Gyro_Init()
  *   AppTask_5ms()  里每个周期调一次 Gyro_Update()
  *   要角度 -> Gyro_GetTotalAngle()；要清零 -> Gyro_ResetTotalAngle()
  *   模块不在时 Gyro_IsOk() 返回 0，直接退回编码器那套，不影响跑车
@@ -341,7 +341,7 @@ uint32_t Service_Clock(void)
 #define TELEMETRY_MODE    0
 
 
-void Service_Init(void)
+void App_Init(void)
 {
 	NVIC_PriorityGroupConfig(NVIC_PriorityGroup_2);
 	Encoder_Init();
@@ -817,7 +817,7 @@ static uint8_t Task_FetchVisionData(VisionData_t *vis_data)
     Vision_EverSeen = 1;//收到过数据了,以后超时就真的要停
     
     lostdata_time = 0;//收到数据,清空超时计数
-    Vision_LastTick  = Service_Clock();//记录视觉存活时刻, 供板载灯判断断线
+    Vision_LastTick  = App_Clock();//记录视觉存活时刻, 供板载灯判断断线
     Indicator_Fault  = 0;
     return 1; // 拿到了
 }
@@ -844,7 +844,7 @@ static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
     {
         Corner_Active = 1;
         Corner_Accum  = 0.0f;
-        Corner_Tick   = Service_Clock();
+        Corner_Tick   = App_Clock();
         Corner_TurnStartMileage = Corner_SegMileage;   /* 调试：强转也记开转里程 */
         Turn_TargetAngle_Deg = Turn_AngleDeg[Corner_Index];
         Gyro_ResetTotalAngle();
@@ -864,7 +864,7 @@ static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
         {
             Corner_Armed  = 0;
             Corner_Active = 0;
-            if ((Service_Clock() - Corner_DoneTick) > CORNER_HANDOVER_MS)
+            if ((App_Clock() - Corner_DoneTick) > CORNER_HANDOVER_MS)
             {
                 // 直行够久了,强制交回视觉:不 return,落到下面的PD去。
                 // 编码器只管"大致转到90度",剩下的航向让视觉修(偏差已限幅±20,
@@ -981,7 +981,7 @@ static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
 
 static void Task_Indicate(void)
 {
-    uint32_t now_ms = Service_Clock();
+    uint32_t now_ms = App_Clock();
     uint8_t  blink_ticks;
 
     // 台架标定模式:双闪(闪两下、停一下,周期 1.2 秒)。
