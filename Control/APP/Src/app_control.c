@@ -9,46 +9,63 @@
 #include "bsp_bluetooth.h"
 #include "bsp_receiverk210.h"
 #include "bsp_systimer.h"
-#include "mid_pid.h"
-#include "mid_protocol.h"
-#include "Debug.h"
 #include "bsp_watchdog.h"
 #include "bsp_indicatorled.h"
 #include "bsp_gyro.h"
+#include "mid_pid.h"
+#include "mid_protocol.h"
+#include "Debug.h"
+
+/* ===== 弯道状态机分两半（读这个文件之前先看这段）=========================
+ * 30ms 任务（有视觉帧才会跑）：决定「要不要认这个弯」
+ *     —— 查里程门禁、查冷却、置 Corner_Armed
+ *  5ms  任务（每 5 毫秒，不依赖视觉）：决定「什么时候真的开始转、转够了没有」
+ *     Corner_Armed --走够 TURN_ARM_CM--> Corner_Active --陀螺仪量够角度--> Corner_Done
+ *
+ * 为什么必须分两半：
+ *   弯里 47.5% 的帧好行=0（11-20 日志统计），视觉一黑，30ms 任务第一句就
+ *   `if (got == 0) return;` 直接退出；而转弯停不下来会一直转（240 度/秒）。
+ *   所以「停」必须由 5ms 的编码器/陀螺仪说了算，不能挂在视觉上。
+ *
+ * 为什么"认不认"在 30ms：只有拿到视觉帧才知道 state 是几，没别的办法。
+ *
+ * 目标速度 target_left/right 目前有 6 处赋值（5ms 一处、30ms 五处），
+ * 见下方各自的行尾注释。这是下一版要合并的地方。
+ * ====================================================================== */
 
 static void Task_StartStopCmd(void);
 static void Task_CarStop(void);
 static void Task_BtCommand(void);
 static void Task_SendTelemetry(void);
 static uint8_t Task_FetchVisionData(VisionData_t *vis_data);
-static void Task_CalculateTargetSpeed(VisionData_t *vis_data);
+static void Task_30ms_Control(VisionData_t *vis_data);
 static void Task_Indicate(void);
 static void CarRun_Set(uint8_t run);
 static uint8_t Task_EncoderCalib(void);
-static void Task_CornerSteer(uint32_t curr_ms);
+static void Task_5ms_CornerStep(uint32_t curr_ms);
 static uint8_t Corner_TurnAngleReached(void);
 
-static uint32_t task_last_5ms = 0;
-static uint32_t task_last_10ms = 0;
-static uint32_t task_last_30ms = 0;
-static uint32_t task_last_100ms = 0;
+static uint32_t task_last_5ms = 0;//5ms时间片
+static uint32_t task_last_10ms = 0;//10ms时间片
+static uint32_t task_last_30ms = 0;//30ms时间片
+static uint32_t task_last_100ms = 0;//100ms时间片
 
-static pid_velocity_t pid_v_left;
-static pid_velocity_t pid_v_right;
-static pid_line_t pid_l;
+static pid_velocity_t pid_v_left;//左速度环pid结构体
+static pid_velocity_t pid_v_right;//右速度环pid结构体
+static pid_line_t pid_l;//方向环结构体
 
-static uint8_t CarRun_State = 0;
+static uint8_t CarRun_State = 0;//启停状态变量
 
 static float Speed_Straight   = 30.0f; //直道基速(电机上限37，留7个count给差速)
 static float Speed_SmallAngle = 25.0f; //小角度(直角,钝角)基速
 static float Speed_LargeAngle = 15.0f; //大角度(锐角)基速
-static float target_left = 0.0f;
-static float target_right = 0.0f;
-static float actual_left = 0.0f;
-static float actual_right = 0.0f;
+static float target_left = 0.0f;//目标左轮速度
+static float target_right = 0.0f;//目标右轮速度
+static float actual_left = 0.0f;//实际左轮速度
+static float actual_right = 0.0f;//实际右轮速度
 static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差，给 100ms 发波形
 
-/* 弯道转向：用编码器累计差分量角度（2026-11-20 实车改造）（详见 Doc/代码说明.md §1） */
+/* 弯道转向：用编码器脉冲累计差分量角度（2026-11-20 实车改造）（详见 Doc/代码说明.md §1） */
 #define TURN_DIFF_TARGET   1730.0f  // 转 90 度需要累计的(左-右)counts
                                     // 标定记录:理论值 111.8*11=1230,实测只转出 64 度
                                     //          按比例 1230*90/64 = 1730(内轮被拖着走,编码器多算了)
@@ -58,9 +75,9 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
 #define TURN_TARGET_ANGLE_DEG 90.0f /* 默认目标角（度）。真正用哪个由下面的表决定 */
 
 /* 里程查表：按「这是第几个要甩的弯」决定转多少度   2026-11-21 新增（详见 Doc/代码说明.md §3） */
-#define TURN_USE_MILEAGE_TABLE  1
-#define TURN_USE_38_BENDS       0
-#define TURN_ALLOW_FORCE        0
+#define TURN_USE_MILEAGE_TABLE  1//里程校验开关
+#define TURN_USE_38_BENDS       0//决定钝角弯要不要也要当弯道处理
+#define TURN_ALLOW_FORCE        0//决定是否在视觉迟迟不报弯的时候根据里程强行报弯
 
 /* 死区：里程离本段阈值太远，就当视觉在报假信号，不转。（详见 Doc/代码说明.md §4） */
 #define TURN_DIST_EARLY_CM      30.0f   /* 允许比阈值早这么多厘米（门就开在这里） */
@@ -104,7 +121,7 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
 #define CORNER_HANDOVER_MS 500      // 转完之后最多直行 500 毫秒
 
 /* 弯道冷却（厘米）。（详见 Doc/代码说明.md §9） */
-#define CORNER_COOLDOWN_CM 70.0f
+#define CORNER_COOLDOWN_CM 70.0f//过弯之后再走70cm才允许再次过弯,否则不算
 
 /* 偏差限幅(像素)。（详见 Doc/代码说明.md §10） */
 #define LIMIT_LINE_ERR_MAX 30.0f
@@ -173,7 +190,7 @@ void App_Init(void)
 	Key_Init();
 	// 台架标定模式:上电瞬间按住开关不放就进标定
 	// (按键接在 PA0, 上拉输入, 按下 = 低电平; 具体引脚见 Key.c)
-	if (GPIO_ReadInputDataBit(GPIOA, GPIO_Pin_0) == 0)
+	if (GPIO_ReadInputDataBit(GPIOA, GPIO_Pin_0) == 0)//按住按钮上电:调试模式
 	{
 		Calib_Mode = 1;
 	}
@@ -210,26 +227,26 @@ void AppTask_5ms(uint32_t curr_ms)//内环速度环控制
     task_last_5ms = curr_ms; //重置闹钟
 
 	Encoder_Update();
-	actual_left  = (float)Encoder_GetDeltaLeft();
-	actual_right = (float)Encoder_GetDeltaRight();
+	actual_left  = (float)Encoder_GetDeltaLeft();//读取实际左轮速度
+	actual_right = (float)Encoder_GetDeltaRight();//读取实际右轮速度
 
 	/* 陀螺仪每 5 毫秒读一次。                               （详见 Doc/代码说明.md §15） */
-	Gyro_Update(curr_ms);
+	Gyro_Update(curr_ms);//更新陀螺仪数据,保证后续每一次读取到的都是陀螺仪更新后的数据
 
 	/* 台架标定模式：只数轮子、不驱动电机。返回 1 说明这一拍别跑车。 */
 	if(Task_EncoderCalib()) return;
 
-	if(CarRun_State == 0) return;
+	if(CarRun_State == 0) return;//停车模式不启动
 
 	/* 段内里程：从「上一个弯转完」到现在走了多少厘米。（详见 Doc/代码说明.md §16） */
 	Corner_SegMileage += ((actual_left + actual_right) * 0.5f) * CM_PER_COUNT;
 
 	/* 里程台架用：两轮累计计数，永不清零（段内里程每过一个弯会清零，量全程要用这个） */
-	Odo_LeftTotal  += actual_left;
-	Odo_RightTotal += actual_right;
+	Odo_LeftTotal  += actual_left;//总左里程
+	Odo_RightTotal += actual_right;//总右里程
 
-	/* 弯道转向：这一段单独成函数，见文件后半的 Task_CornerSteer()。 */
-	Task_CornerSteer(curr_ms);
+	/* 弯道转向：这一段单独成函数，见文件后半的 Task_5ms_CornerStep()。 */
+	Task_5ms_CornerStep(curr_ms);
 
 	float pwm_left = PID_V_Calc(&pid_v_left,actual_left,target_left);
 	float pwm_right = PID_V_Calc(&pid_v_right,actual_right,target_right);
@@ -262,7 +279,7 @@ void AppTask_30ms(uint32_t curr_ms)//外环方向环控制
 
     if(CarRun_State == 0) return;
     if(got == 0) return;//没拿到新数据直接结束避免用旧数据算
-    Task_CalculateTargetSpeed(&vis_data);
+    Task_30ms_Control(&vis_data);
 }
 
 
@@ -299,43 +316,41 @@ static uint8_t Corner_TurnAngleReached(void)
 
 #if TURN_USE_GYRO_ANGLE
 	{
-		float turned_angle_degrees;
+		float turned_angle_degrees;//转过的角度
 
-		if (Gyro_IsOk())
+		if (Gyro_IsOk())//如陀螺仪无问题
 		{
-			turned_angle_degrees = Gyro_GetTotalAngle();
-			if (turned_angle_degrees < 0.0f)
+			turned_angle_degrees = Gyro_GetTotalAngle();//获取当前转角
+			if (turned_angle_degrees < 0.0f)//正负无所谓
 			{
 				turned_angle_degrees = -turned_angle_degrees;
 			}
 
-			if (turned_angle_degrees >= Turn_TargetAngle_Deg)
+			if (turned_angle_degrees >= Turn_TargetAngle_Deg)//转角达到目标角度
 			{
-				return 1;
+				return 1;//转弯结束
 			}
-
-			return 0;
+			return 0;//尚未转完
 		}
 	}
 #endif
-	/* 老办法，或者陀螺仪不在时的退路 */
+	/*用老办法保险，或者陀螺仪不在时的退路 */
 	if (Corner_Accum >= TURN_DIFF_TARGET)
 	{
-		return 1;
+		return 1;//转弯结束
 	}
-
-	return 0;
+	return 0;//尚未转完
 }
 
 
 /* 弯道转向状态机：每 5 毫秒问一次「这个弯该不该开始转、转够了没有」。（详见 Doc/代码说明.md §18） */
-static void Task_CornerSteer(uint32_t curr_ms)
+static void Task_5ms_CornerStep(uint32_t curr_ms)
 {
 	//弯道转向:每5毫秒检查"这个弯转够了没有",够了就停
-	if(Corner_Active)
+	if(Corner_Active)//正在差速转弯
 	{
 		Corner_Accum += (actual_left - actual_right);   // 老办法用；走陀螺仪时只作记录
-		if(Corner_TurnAngleReached() || (curr_ms - Corner_Tick) > TURN_TIMEOUT_MS)
+		if(Corner_TurnAngleReached() || (curr_ms - Corner_Tick) > TURN_TIMEOUT_MS)//转角足够或超时
 		{
 			Corner_Active = 0;//转够了(或超时兜底),不再按弯道差速走
 			Corner_Done   = 1;//锁存:这个弯已经转过,视觉再喊弯也不转第二次
@@ -354,28 +369,28 @@ static void Task_CornerSteer(uint32_t curr_ms)
 			target_right = Speed_CornerExit;
 		}
 	}
-	else if(Corner_Armed)
+	else if(Corner_Armed)//准备再往前一段距离开始转弯
 	{
 		//视觉报弯时,相机还看得远,车其实离弯道还有一段距离,先直着走过去
-		Corner_ArmDist += ((actual_left + actual_right) * 0.5f) * CM_PER_COUNT;
-		if(Corner_ArmDist >= TURN_ARM_CM)
+		Corner_ArmDist += ((actual_left + actual_right) * 0.5f) * CM_PER_COUNT;//取均值减小单侧误差,最后换算为cm
+		if(Corner_ArmDist >= TURN_ARM_CM)//报弯之后再走一段长度之后,开始正式转弯
 		{
-			Corner_Armed  = 0;
-			Corner_Active = 1;
-			Corner_Accum  = 0.0f;
-			Corner_Tick   = curr_ms;
+			Corner_Armed  = 0;//解除准备状态
+			Corner_Active = 1;//激活弯道状态:正式转弯
+			Corner_Accum  = 0.0f;//累计转角归零开始计数
+			Corner_Tick   = curr_ms;//对齐当前时间戳
 
 			/* 调试：把开转这一刻的段内里程锁存下来（见文件上方的说明） */
-			Corner_TurnStartMileage = Corner_SegMileage;
+			Corner_TurnStartMileage = Corner_SegMileage;//标定使用,锁存转弯时间
 
 			/* 从表里取出「这个弯该转多少度」。                    2026-11-21 新增
 			 * 直角 90 / 锐角 103 / 两个 38.5 的浅弯默认不甩（不在这张表里）。 */
-			Turn_TargetAngle_Deg = Turn_AngleDeg[Corner_Index];
+			Turn_TargetAngle_Deg = Turn_AngleDeg[Corner_Index];//查表要转的角度
 
 			/* 转弯就从这一刻算起，陀螺仪角度清零。
 			 * 为什么在这里清：等里程那 20 厘米里车会小幅画龙，
 			 * 角度从那时开始累的话会带进弯里；从"真正开始转"起算才干净。 */
-			Gyro_ResetTotalAngle();
+			Gyro_ResetTotalAngle();//清理角度开始转弯
 		}
 	}
 }
@@ -384,30 +399,30 @@ static void Task_CornerSteer(uint32_t curr_ms)
 /* 台架：编码器里程标定（原来直接写在 5 毫秒任务里，2026-11-22 抽成函数）（详见 Doc/代码说明.md §20） */
 static uint8_t Task_EncoderCalib(void)
 {
-	if(Calib_Mode == 0)
+	if(Calib_Mode == 0)//不开启调试模式
 	{
 		return 0;		// 没进标定模式，交给下面的正常跑车逻辑
 	}
-
+    //此后为打开标定模式的命令
 	if((actual_left > 0.5f) || (actual_left < -0.5f) ||
-	   (actual_right > 0.5f) || (actual_right < -0.5f))
+	   (actual_right > 0.5f) || (actual_right < -0.5f))//有动作才开始标定,防止上电卡死
 	{
 		// 有动作：解锁并继续累加
 		// (踩过的坑:以前"静止1秒就锁定",而一上电摆车时本来就是静止的,
 		//  于是程序上电1秒后就把自己锁死了,之后怎么推都是 0)
-		Calib_IdleMs = 0;
-		Calib_Frozen = 0;
-		Calib_Left  += actual_left;
-		Calib_Right += actual_right;
-		Calib_Cm    += ((actual_left + actual_right) * 0.5f) * CM_PER_COUNT;
+		Calib_IdleMs = 0;//已过多少ms计数不改变
+		Calib_Frozen = 0;//尚未锁定
+		Calib_Left  += actual_left;//计左编码器计数
+		Calib_Right += actual_right;//计右编码器计数
+		Calib_Cm    += ((actual_left + actual_right) * 0.5f) * CM_PER_COUNT;//为累计里程,取均值减小误差并转换单位
 	}
-	else
+	else//正式开始标定
 	{
-		Calib_IdleMs += 5;
+		Calib_IdleMs += 5;//最小时间单位5ms
 		// 只有"已经走过一段"之后,静止 1 秒才锁定
 		if((Calib_IdleMs > 1000) && ((Calib_Left != 0.0f) || (Calib_Right != 0.0f)))
 		{
-			Calib_Frozen = 1;
+			Calib_Frozen = 1;//冻结标定,锁数值,防止后续因误操作数值变化导致标定不准
 		}
 	}
 	Motor_SetDuty(0,0);	// 标定期间不驱动电机, 可以随便推
@@ -433,49 +448,50 @@ static void Task_StartStopCmd(void)
     }
 
     /* 语音启停（2026-11-21 正式接入）（详见 Doc/代码说明.md §21） */
-    uint8_t voice_cmd = Voice_GetCommand();
-    if (voice_cmd == VOICE_CMD_START)
+    uint8_t voice_cmd = Voice_GetCommand();//获取语音指令
+    if (voice_cmd == VOICE_CMD_START)//启动指令
     {
         if (Vision_EverSeen != 0)
+        //k210没有准备好即使发送指令也作废,若准备好(曝光完成)启动则可被执行
         {
             CarRun_Set(1);
         }
     }
-    else if (voice_cmd == VOICE_CMD_STOP)
+    else if (voice_cmd == VOICE_CMD_STOP)//停止指令
     {
         CarRun_Set(0);
     }
 }
 
 
-//2.停车时的安全清理,防止积分饱和(100ms)
+//2.停车时的安全清理(100ms)
 static void Task_CarStop(void)
 {
-    Motor_SetDuty(0,0);
-    target_left = 0;
-    target_right = 0;
-    pid_v_left.err_integral = 0;
-    pid_v_left.err = 0;
-    pid_v_right.err_integral = 0;
-    pid_v_right.err = 0;
-    pid_l.err = 0;
-    pid_l.err_diff_last = 0;
-    pid_l.err_diff = 0;
-    Corner_Armed   = 0;
-    Corner_Active  = 0;
-    Corner_Done    = 0;
-    Corner_Clear   = 3;
-    Corner_ArmDist = 0.0f;
-    Corner_Accum   = 0.0f;
-    Corner_DoneTick = 0;
+    Motor_SetDuty(0,0);//使电机停转
+    target_left = 0;//清空左速度
+    target_right = 0;//清空右速度
+    pid_v_left.err_integral = 0;//清空左积分
+    pid_v_left.err = 0;//清空左误差
+    pid_v_right.err_integral = 0;//清空右积分
+    pid_v_right.err = 0;//清空右误差
+    pid_l.err = 0;//清空方向环误差
+    pid_l.err_diff_last = 0;//清空方向环上次原始偏差
+    pid_l.err_diff = 0;//清空本次原始偏差
+    Corner_Armed   = 0;//清空弯道准备状态
+    Corner_Active  = 0;//清空弯道进行时状态
+    Corner_Done    = 0;//清空转弯完毕标志
+    Corner_Clear   = 3;//强制清空视觉判弯次数
+    Corner_ArmDist = 0.0f;//清空视觉报弯后走过的路程
+    Corner_Accum   = 0.0f;//清空转弯累计角度
+    Corner_DoneTick = 0;//清空转弯完的时刻
     /* 里程编号与段内里程也要归零：下次启动必须从「第一个要甩的弯」重新数。  2026-11-21 */
-    Corner_Index         = 0;
-    Corner_SegMileage    = 0.0f;
-    Turn_TargetAngle_Deg = TURN_TARGET_ANGLE_DEG;
+    Corner_Index         = 0;//清空弯道序号,下次从直角开始
+    Corner_SegMileage    = 0.0f;//清空上个弯道结束到现在走过的路程
+    Turn_TargetAngle_Deg = TURN_TARGET_ANGLE_DEG;//恢复保守角度,下次被查表值覆盖
 }
 
 
-//3.处理蓝牙指令: 启停 + 调参(100ms)
+//3.处理上位机发给蓝牙的指令:启停+pid调参(100ms)
 static void Task_BtCommand(void)
 {
     uint8_t rx_byte;
@@ -544,21 +560,21 @@ static void Task_SendTelemetry(void)
 {
     debugdata_t data;
 
-#if (TELEMETRY_MODE == 3)
+#if (TELEMETRY_MODE == 3)//调试模式3:陀螺仪调试
     /* ===== 3 陀螺仪台架 =====
      * I0 = WHO_AM_I（ICM-20602 应该是 18）
      * I1 = X 原始读数   I2 = Y 原始读数   I3 = Z 原始读数
      * I4 = 累计角度（度）—— 静置时应几乎不动
      * 注意 GYRO_READ_ALL_AXES = 0 时 I1/I2 恒为 0，这是正常的。 */
-    data.target_left  = (float)Gyro_GetWhoAmIValue();
-    data.actual_left  = (float)Gyro_GetAxisXRaw();
-    data.target_right = (float)Gyro_GetAxisYRaw();
-    data.actual_right = (float)Gyro_GetAxisZRaw();
-    data.error        = Gyro_GetTotalAngle();
-    data.mileage_arm  = 0.0f;
-    data.mileage_turn = 0.0f;
+    data.target_left  = (float)Gyro_GetWhoAmIValue();//实际发送当前陀螺仪的编号
+    data.actual_left  = (float)Gyro_GetAxisXRaw();//实际发送X轴原始数据(没用,为0)
+    data.target_right = (float)Gyro_GetAxisYRaw();//实际发送Y轴原始数据(没用,为0)
+    data.actual_right = (float)Gyro_GetAxisZRaw();//实际发送Z轴原始数据,用于处理转角
+    data.error        = Gyro_GetTotalAngle();//实际发送当前转角
+    data.mileage_arm  = 0.0f;//实际发送视觉报弯那一刻的段内里程(cm)
+    data.mileage_turn = 0.0f;//正式开始转那一刻的段内里程(cm)
 
-#elif (TELEMETRY_MODE == 1)
+#elif (TELEMETRY_MODE == 1)//调试模式1:视觉调试
     /* ===== 1 视觉台架 =====
      * 车可以不动（按住按键上电，电机不驱动），把车摆到赛道上不同位置看这几个数。
      * I0 = 视觉状态（0 直道 / 1 预警 / 2 有弯 / 3 终点）
@@ -566,28 +582,28 @@ static void Task_SendTelemetry(void)
      * I2 = 实时段内里程（厘米）
      * I3 = 报弯里程（锁存）      I4 = 开转里程（锁存）
      * I5 = 上电以来收到多少帧     I6 = 连续没收到几次（到 11 会触发停车保护） */
-    data.target_left  = (float)last_vision_state;
-    data.actual_left  = last_vision_error;
-    data.target_right = Corner_SegMileage;
-    data.actual_right = Corner_ArmMileage;
-    data.error        = Corner_TurnStartMileage;
-    data.mileage_arm  = (float)VisionFrameCount;
-    data.mileage_turn = (float)VisionLostTicks;
+    data.target_left  = (float)last_vision_state;//实际发送上一次接收到的视觉状态(0123)
+    data.actual_left  = last_vision_error;//实际发送视觉计算的偏差
+    data.target_right = Corner_SegMileage;//实际发送此时段内走过的里程
+    data.actual_right = Corner_ArmMileage;//实际发送视觉判弯时已走过的段内里程
+    data.error        = Corner_TurnStartMileage;//实际发送真正开始转那一刻的段内里程
+    data.mileage_arm  = (float)VisionFrameCount;//实际发送已收到的视觉帧数
+    data.mileage_turn = (float)VisionLostTicks;//实际发送视觉已经丢线的帧数
 
-#elif (TELEMETRY_MODE == 2)
+#elif (TELEMETRY_MODE == 2)//调试模式2:里程调试
     /* ===== 2 里程台架 =====
      * 正常跑车（视觉循迹），跑一段已知长度，用卷尺量完对比 I3。
      * I0 = 左轮累计计数      I1 = 右轮累计计数
      * I2 = 实时段内里程（厘米）
      * I3 = 两轮平均累计换算成厘米 ← 和卷尺比这个
      * I4 = 报弯里程          I5 = 开转里程          I6 = 0 */
-    data.target_left  = Odo_LeftTotal;
-    data.actual_left  = Odo_RightTotal;
-    data.target_right = Corner_SegMileage;
-    data.actual_right = (Odo_LeftTotal + Odo_RightTotal) * 0.5f * CM_PER_COUNT;
-    data.error        = Corner_ArmMileage;
-    data.mileage_arm  = Corner_TurnStartMileage;
-    data.mileage_turn = 0.0f;
+    data.target_left  = Odo_LeftTotal;//实际发送左轮累计计数
+    data.actual_left  = Odo_RightTotal;//实际发送右轮累计计数
+    data.target_right = Corner_SegMileage;//实际发送此时的段内里程
+    data.actual_right = (Odo_LeftTotal + Odo_RightTotal) * 0.5f * CM_PER_COUNT;//实际发送计算的走过的全部里程
+    data.error        = Corner_ArmMileage;//实际发送视觉报弯时的里程
+    data.mileage_arm  = Corner_TurnStartMileage;//实际发送开始转弯时的里程
+    data.mileage_turn = 0.0f;//没数据发:占位
 
 #else
     /* ===== 0 跑车（默认，跑的时候发这一组）=====
@@ -656,11 +672,12 @@ static uint8_t Task_FetchVisionData(VisionData_t *vis_data)
 
 
 // 6. 计算方向环与控制输出(30ms)
-static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
+static void Task_30ms_Control(VisionData_t *vis_data)
 {
-    uint8_t state = vis_data->car_state;
+    //弯道状态机
+    uint8_t state = vis_data->car_state;//获取视觉报的状态
 
-    float vision_error = (float)vis_data->error;
+    float vision_error = (float)vis_data->error;//获取视觉报的像素偏差
     last_vision_error = vision_error;//波形发原始偏差，方便看视觉本身跳不跳
 
     float raw_error = vision_error;//喂给PD的那一份：先限幅
@@ -685,7 +702,7 @@ static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
 #endif
 
     /* 弯道转向状态机（三段） ----------（详见 Doc/代码说明.md §22） */
-    if (state == 2)
+    if (state == 2)//获取到视觉信号:可能是弯道
     {
         Corner_Clear = 0;//视觉说这里就是弯,清掉"已经离开"的计数
         if (Corner_Done)//这个弯已经转够了
@@ -701,34 +718,34 @@ static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
             else
             {
                 // 刚转完这一小段先直行,让相机从"还在看弯道"缓过来
-                target_left  = Speed_CornerExit;
+                target_left  = Speed_CornerExit;//视觉说是弯就先当他是,后面再用里程校验
                 target_right = Speed_CornerExit;
                 return;
             }
         }
         else if (Corner_Active)//里程到了:固定差速转,不看视觉偏差
         {
-            target_left  = TURN_SPEED + TURN_VALUE;
+            target_left  = TURN_SPEED + TURN_VALUE;//完全不信视觉信息
             target_right = TURN_SPEED - TURN_VALUE;
             return;
         }
         else //刚报弯:先看是不是还在上一个弯的冷却期里
         {
-            if (Corner_SegMileage < CORNER_COOLDOWN_CM)
+            if (Corner_SegMileage < CORNER_COOLDOWN_CM)//还在转弯冷却
             {
                 // 冷却中:上一个弯刚转完,车还没走够距离。
                 // 这时候视觉再喊弯,多半是同一个弯还没从画面里退出去 —— 当直道走,不转。
-                target_left  = Speed_Straight;
+                target_left  = Speed_Straight;//按直道最高速度跑
                 target_right = Speed_Straight;
                 return;
             }
 
-#if TURN_USE_MILEAGE_TABLE
+#if TURN_USE_MILEAGE_TABLE//里程校验开启:审核视觉数据以及里程超阈值强转
             /* 死区检查：视觉说是弯，但里程离本段阈值太远 → 当假信号。   2026-11-21 新（详见 Doc/代码说明.md §23） */
             if ((Corner_SegMileage < (Turn_ThresholdCm[Corner_Index] - TURN_DIST_EARLY_CM)) ||
                 (Corner_SegMileage > (Turn_ThresholdCm[Corner_Index] + TURN_DIST_LATE_CM)))
             {
-                target_left  = Speed_Straight;
+                target_left  = Speed_Straight;//前面的视觉转弯降速数据舍弃,还是直道继续跑
                 target_right = Speed_Straight;
                 return;
             }
@@ -746,7 +763,7 @@ static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
     {
         /* 要连续 3 次方向环(3 × 30 毫秒 = 90毫秒)都说"不是弯",才算这个弯真的过（详见 Doc/代码说明.md §24） */
         if (Corner_Clear < 3) Corner_Clear++;
-        if (Corner_Clear >= 3)
+        if (Corner_Clear >= 3)//过弯结束
         {
             /* 2026-11-21 修：正在转弯时不许被「视觉说不是弯」取消。（详见 Doc/代码说明.md §25） */
             if (Corner_Active == 0)
@@ -760,6 +777,7 @@ static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
         //不 return,继续走下面的正常 PD 控制
     }
 
+    //直道pd
     float error = raw_error;//P项用这份：±3 以内算 0，防中心附近细微抖动
     if(fabsf(error)<=3)
     {
@@ -799,7 +817,7 @@ static void Task_Indicate(void)
     // 为什么不用常亮:2026-11-20 夜发现这块主控板的 LED 极性和代码里写的相反
     // (代码里 Indicator_TurnOn 是输出低电平,这块板低电平是灭),所以"常亮"会显示成常暗,
     // 而且常暗又跟"运行中视觉正常"撞在一起。闪烁不受极性影响,所以改用闪烁区分。
-    if (Calib_Mode)
+    if (Calib_Mode)//校验模式:打双闪
     {
         Indicator_Tick++;
         if (Indicator_Tick >= 12) Indicator_Tick = 0;
