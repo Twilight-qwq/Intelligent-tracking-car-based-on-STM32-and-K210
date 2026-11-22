@@ -1,4 +1,4 @@
-#include "bsp_key.h"
+﻿#include "bsp_key.h"
 
 #define KEY_CLK             RCC_APB2Periph_GPIOA
 #define KEY_PORT            GPIOA
@@ -44,6 +44,15 @@ void Key_CheckRequest(uint32_t current_tick)
             }
         }
     }
+}
+
+/* 按键现在是不是按着（低电平 = 按下）。
+ * 给「上电瞬间按住不放就进台架标定」用：那一刻主循环还没跑，
+ * 消抖那套（Key_CheckRequest）用不上，所以这里直接读一次电平。
+ * 返回：1 = 按着，0 = 松着。 */
+uint8_t Key_IsDown(void)
+{
+    return (GPIO_ReadInputDataBit(KEY_PORT, KEYA_PIN) == 0) ? 1 : 0;
 }
 
 uint8_t Key_GetRequest(void)

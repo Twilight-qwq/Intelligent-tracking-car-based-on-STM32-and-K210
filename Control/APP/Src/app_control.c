@@ -192,7 +192,7 @@ void App_Init(void)
 	Key_Init();
 	// 台架标定模式:上电瞬间按住开关不放就进标定
 	// (按键接在 PA0, 上拉输入, 按下 = 低电平; 具体引脚见 Key.c)
-	if (GPIO_ReadInputDataBit(GPIOA, GPIO_Pin_0) == 0)//按住按钮上电:调试模式
+	if (Key_IsDown())//按住按钮上电:进台架标定模式
 	{
 		Calib_Mode = 1;
 	}
