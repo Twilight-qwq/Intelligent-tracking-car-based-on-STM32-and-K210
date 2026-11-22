@@ -75,18 +75,27 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
 #define TURN_USE_38_BENDS       0
 #define TURN_ALLOW_FORCE        0
 
-/* 死区：离本段阈值超过这么多厘米，就当视觉在报假信号，不转。
+/* 死区：里程离本段阈值太远，就当视觉在报假信号，不转。
+ * 2026-11-22 从「对称 40」改成「左 30 / 右 10」。为什么两边不能一样：
  *
- * 2026-11-22 从 55 收到 40。为什么要收：
- *   视觉那边把「判弯」的最后一道门去掉了（K210 的 SM_MIN_SINGLE 1→0），
- *   弯口会比以前报得多，误报也会变多 —— 这份风险必须由里程这边接住。
- * 代价（必须知道）：
- *   这段路是「双保险」，两边都不能错。里程刻度 CM_PER_COUNT 现在还是理论值
- *   0.01402、从没现场校过；如果刻度偏了 5%，350 厘米那段就会偏 17.5 厘米，
- *   再加上 40 的窗口，真弯被误判成假信号的风险就上来了。
- *   所以这一条要和「五个里程阈值实测」一起定，不能单独调。
- * 硬约束：窗口必须小于最短一段（110 厘米）的一半，否则会串到下一个弯。40 满足。 */
-#define TURN_DIST_TOLERANCE_CM  40.0f
+ *   先记住一件事：容差不是「提前多少厘米转弯」，它只决定「信不信视觉喊弯」。
+ *     门什么时候开 = 阈值 − 左容差
+ *     车什么时候转 = 门开 + TURN_ARM_CM(20)
+ *
+ *   ① 左边（早）为什么收到 30：
+ *      对称 40 时 180 − 40 = 140 门开，140 + 20 = 160 才转 ——
+ *      160 正好是内拐点，也正好是合格线 [160, 180] 的最边上，一点余量都没有。
+ *      收到 30：180 − 30 = 150 门开，150 + 20 = 170 才转，几乎就是理想点 171.5。
+ *      （这 20 厘米是代码写死的，它会把「早报」抵掉一半，所以左边不能无限收。）
+ *
+ *   ② 右边（晚）为什么收到 10：
+ *      车晚报弯本来就几乎不可能 —— 弯一进画面，视觉会每帧一直喊。
+ *      而对称 40 允许 220 也通过，220 + 20 = 240 才开转，那时车已冲出弯口 60 厘米。
+ *      只留 10，是给「里程刻度偏大」留的余量（CM_PER_COUNT 还是理论值 0.01402）。
+ *
+ * 硬约束：总宽（30 + 10 = 40）必须小于最短一段（110 厘米）的一半，否则会串到下一个弯。满足。 */
+#define TURN_DIST_EARLY_CM      30.0f   /* 允许比阈值早这么多厘米（门就开在这里） */
+#define TURN_DIST_LATE_CM       10.0f   /* 允许比阈值晚这么多厘米（只给刻度误差留一点） */
 
 /* 里程兜底：超过阈值这么多厘米还没等到视觉报弯，就强行转（要 TURN_ALLOW_FORCE = 1 才生效） */
 #define TURN_FORCE_CM           30.0f
@@ -125,7 +134,7 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
    * 现在这三个数的含义是「到中心线拐点（也就是拐角正方形的中心）的距离」。
    *
    * 还是没实测！等跑一圈拿到真实的「开始转那一刻的里程」，用那个数替换。
-   * 注意它同时是「信不信视觉报弯」的门禁中心（TURN_DIST_TOLERANCE_CM）。 */
+   * 注意它同时是「信不信视觉报弯」的门禁中心（TURN_DIST_EARLY_CM / TURN_DIST_LATE_CM）。 */
   static const float Turn_ThresholdCm[TURN_TABLE_SIZE] = { 180.0f, 325.0f, 330.0f };
   static const float Turn_AngleDeg[TURN_TABLE_SIZE]     = {  90.0f, 103.0f,  90.0f };
 #endif
@@ -871,8 +880,11 @@ static void Task_CalculateTargetSpeed(VisionData_t *vis_data)
             /* 死区检查：视觉说是弯，但里程离本段阈值太远 → 当假信号。   2026-11-21 新增
              * 为什么要这条：视觉认得「有弯」但认不出「是哪个弯」，见弯就喊；
              *   而里程知道现在该不该有弯。两边对不上就别信视觉。
-             * 55 的来历：最短一段 110 厘米的一半。超过它，「最近的阈值」就已经是下一个弯了。 */
-            if (fabsf(Corner_SegMileage - Turn_ThresholdCm[Corner_Index]) > TURN_DIST_TOLERANCE_CM)
+             * 2026-11-22：左边 30、右边 10，不再对称（推导见上面 TURN_DIST_EARLY_CM 的注释）。
+             * 窗口上限的来历：最短一段 110 厘米的一半，超过它「最近的阈值」就已经是下一个弯了。
+             *   现在总宽 30 + 10 = 40，满足。 */
+            if ((Corner_SegMileage < (Turn_ThresholdCm[Corner_Index] - TURN_DIST_EARLY_CM)) ||
+                (Corner_SegMileage > (Turn_ThresholdCm[Corner_Index] + TURN_DIST_LATE_CM)))
             {
                 target_left  = Speed_Straight;
                 target_right = Speed_Straight;
