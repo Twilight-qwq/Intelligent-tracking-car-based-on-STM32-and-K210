@@ -317,7 +317,7 @@ uint32_t Service_Clock(void)
  *
  * 这里只留「怎么用它」：
  *   Service_Init()     里调一次 Gyro_Init()
- *   ServiceTask_5ms()  里每个周期调一次 Gyro_Update()
+ *   AppTask_5ms()  里每个周期调一次 Gyro_Update()
  *   要角度 -> Gyro_GetTotalAngle()；要清零 -> Gyro_ResetTotalAngle()
  *   模块不在时 Gyro_IsOk() 返回 0，直接退回编码器那套，不影响跑车
  * ========================================================================= */
@@ -368,7 +368,7 @@ void Service_Init(void)
 }
 
 
-void ServiceTask_Idle(void)
+void AppTask_Idle(void)
 {
 	WatchDog_FeedDog();
 }
@@ -417,7 +417,7 @@ static uint8_t Task_EncoderCalib(void)
 	return 1;			// 告诉 5 毫秒任务:这一拍到此为止
 }
 
-void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
+void AppTask_5ms(uint32_t curr_ms)//内环速度环控制
 {
 	if(curr_ms - task_last_5ms < 5) return;
     task_last_5ms = curr_ms; //重置闹钟
@@ -512,7 +512,7 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 }
 
 
-void ServiceTask_30ms(uint32_t curr_ms)//外环方向环控制
+void AppTask_30ms(uint32_t curr_ms)//外环方向环控制
 {
 	if(curr_ms - task_last_30ms < 30) return;
     task_last_30ms = curr_ms;
@@ -532,7 +532,7 @@ void ServiceTask_30ms(uint32_t curr_ms)//外环方向环控制
 }
 
 
-void ServiceTask_10ms(uint32_t curr_ms)
+void AppTask_10ms(uint32_t curr_ms)
 {
 	if(curr_ms - task_last_10ms < 10) return;
 
@@ -541,7 +541,7 @@ void ServiceTask_10ms(uint32_t curr_ms)
 }
 
 
-void ServiceTask_100ms(uint32_t curr_ms)//开关控制与数据发送
+void AppTask_100ms(uint32_t curr_ms)//开关控制与数据发送
 {
 	
     if(curr_ms - task_last_100ms < 100) return;

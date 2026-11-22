@@ -4,12 +4,12 @@ int main(void)
 	Service_Init();
 	while(1)
 	{
-		ServiceTask_Idle();
+		AppTask_Idle();
 		uint32_t timestamp = Service_Clock();
-		ServiceTask_5ms(timestamp);
-		ServiceTask_10ms(timestamp);
-		ServiceTask_30ms(timestamp);
-		ServiceTask_100ms(timestamp);
+		AppTask_5ms(timestamp);
+		AppTask_10ms(timestamp);
+		AppTask_30ms(timestamp);
+		AppTask_100ms(timestamp);
 	}
 }
 //调试:VOFA+ JustFloat协议
