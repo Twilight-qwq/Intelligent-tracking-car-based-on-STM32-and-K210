@@ -514,6 +514,18 @@ sm_last_ms = 0        # 上一帧的时间戳，用来算这一帧过了多久
 sm_dir_frames = 0     # 连续多少帧「丢得够深」，够 SM_DIR_CONFIRM 才允许打方向
 sm_warn_frames = 0    # 状态 1 已经连续持续了多少帧（防局部误判用）
 
+# ---- 里程估算 + 报弯计数（2026-11-22 加）----
+# 为什么 K210 也能算里程：它知道每帧的档位（sm_state = 0/1/2 对应 30/20/15 档）
+#   和那个档位的名义速度，累加「速度 × 帧间隔」就是估算里程。
+#   名义速度来自 STM32 那边 CM_PER_COUNT 的推导（30 档 84.3 厘米/秒），和真实有偏差，
+#   但用来和单片机的里程互相印证足够了。
+# 这两个数是给「转弯点标定」用的：日志里每一行都能看到
+#   里=估算里程（厘米）   弯=到目前为止进入状态 2 一共几次
+odo_cm = 0.0          # 估算的已跑里程（厘米）
+odo_last_ms = 0       # 上一帧时间戳，用来算帧间隔
+corner_count = 0      # 上电以来「进入状态 2」一共几次
+prev_sm_state = 0     # 上一帧的档位，用来抓 0/1 -> 2 的跳变
+
 
 def good_rows(pattern):
     """从最近那行往远数：连续有几个「两条都在」。
@@ -1185,6 +1197,21 @@ while True:
 
     now_ms = time.ticks_ms()
 
+    # ---- 里程估算 + 报弯计数（2026-11-22 加）----
+    # 用「上一帧的档位」乘这一帧的间隔：这一段时间车是按上一帧的档位在跑的。
+    # 间隔超过 200 毫秒说明卡了一下，不计（免得一下子跳好几米）。
+    if odo_last_ms:
+        _dt = now_ms - odo_last_ms
+        if 0 < _dt < 200:
+            _gear = prev_sm_state
+            if _gear > 2:
+                _gear = 2
+            odo_cm += SM_GEAR_SPEED[_gear] * 100.0 * (_dt / 1000.0)
+    odo_last_ms = now_ms
+    if result[7] == 2 and prev_sm_state != 2:
+        corner_count += 1
+    prev_sm_state = result[7]
+
     # ---- 九行图案一变就打一行（有最小间隔，防止图案抖动时刷屏拖垮帧率）----
     # 弯道是个"过程"（远端先丢、一行一行往里推进），2.5 秒打一块会整个漏掉。
     if PATTERN_LOG:
@@ -1197,9 +1224,11 @@ while True:
             # 加了「最远行阈」和「宽块合计」两个字段：
             # 前者要落在地面亮度以下（否则地面被整片吃掉），后者应该基本都是 0。
             _emit("[已跑 %5.1f 秒] 图案=%s 好行=%d 偏差=%+d 状态=%d 发出=%+d | 最远行阈%3d 宽块合计%d"
+                  " | 里=%d 弯=%d"
                   % (now_ms / 1000.0, pattern_str, good_rows(result[10]),
                      to_sent_scale(result[1]), result[7], result[8],
-                     ROW_THRESHOLD[SCAN_ROW_COUNT - 1], _wide))
+                     ROW_THRESHOLD[SCAN_ROW_COUNT - 1], _wide,
+                     int(odo_cm), corner_count))
             last_pattern_ms = now_ms
             last_pattern_str = pattern_str
 
