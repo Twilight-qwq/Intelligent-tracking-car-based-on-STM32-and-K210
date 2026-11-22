@@ -43,6 +43,8 @@ static void Task_Indicate(void);
 static void CarRun_Set(uint8_t run);
 static uint8_t Task_EncoderCalib(void);
 static void Task_5ms_CornerStep(uint32_t curr_ms);
+static void Corner_SetTarget(uint8_t kind);
+static uint8_t Task_CornerDecide(uint8_t state);
 static uint8_t Corner_TurnAngleReached(void);
 
 static uint32_t task_last_5ms = 0;//5ms时间片
@@ -208,7 +210,6 @@ void App_Init(void)
     WatchDog_Init();
 }
 
-
 void AppTask_Idle(void)
 {
 	WatchDog_FeedDog();
@@ -304,6 +305,107 @@ void AppTask_100ms(uint32_t curr_ms)//开关控制与数据发送
 }
 
 
+/* ===== 弯道目标速度：全文件只有这一处给 target_left/right 写「弯道值」=====
+ * 原来这段逻辑散在 6 个地方（5ms 一处、30ms 五处），读代码要来回翻两个函数。
+ * 现在集中到这里，调用方只说「现在是什么情况」，不自己算速度。 */
+#define CORNER_T_STRAIGHT   0   /* 当直道跑（冷却期 / 里程对不上） */
+#define CORNER_T_ARM        1   /* 视觉已报弯，等里程走够 TURN_ARM_CM */
+#define CORNER_T_TURN       2   /* 固定差速转 */
+#define CORNER_T_EXIT       3   /* 刚转完，交接期直行 */
+
+static void Corner_SetTarget(uint8_t kind)
+{
+	switch (kind)
+	{
+	case CORNER_T_TURN:
+		target_left  = TURN_SPEED + TURN_VALUE;
+		target_right = TURN_SPEED - TURN_VALUE;
+		break;
+	case CORNER_T_ARM:
+		target_left  = TURN_ARM_SPEED;
+		target_right = TURN_ARM_SPEED;
+		break;
+	case CORNER_T_EXIT:
+		target_left  = Speed_CornerExit;
+		target_right = Speed_CornerExit;
+		break;
+	case CORNER_T_STRAIGHT:
+	default:
+		target_left  = Speed_Straight;
+		target_right = Speed_Straight;
+		break;
+	}
+}
+
+
+/* ===== 弯道状态机：30ms 那一半 —— 「认不认这个弯」 =====
+ * 形参：state —— 视觉这一帧报的状态（2 = 有弯）
+ * 返回：1 = 接管了（target_left/right 已写好，调用者直接 return）
+ *       0 = 不接管，交给下面的 PD
+ *
+ * 它只决定「信不信这次报弯」；「什么时候真的开转、转够了没有」在 5ms 的
+ * Task_5ms_CornerStep() 里。为什么必须分两半，见文件开头那段说明。 */
+static uint8_t Task_CornerDecide(uint8_t state)
+{
+	if (state != 2)
+	{
+		/* 要连续 3 次方向环（3 × 30ms = 90ms）都说「不是弯」才算过去 */
+		if (Corner_Clear < 3) Corner_Clear++;
+		if ((Corner_Clear >= 3) && (Corner_Active == 0))
+		{
+			/* 正在转弯时不许被「视觉说不是弯」取消 */
+			Corner_Armed   = 0;
+			Corner_Done    = 0;
+			Corner_ArmDist = 0.0f;
+			Corner_Accum   = 0.0f;
+		}
+		return 0;                       /* 不接管，交给 PD */
+	}
+
+	Corner_Clear = 0;                   /* 视觉说这里就是弯 */
+
+	if (Corner_Done)                    /* 这个弯已经转够了 */
+	{
+		Corner_Armed  = 0;
+		Corner_Active = 0;
+		if ((App_Clock() - Corner_DoneTick) > CORNER_HANDOVER_MS)
+		{
+			return 0;                   /* 交接期结束，交回视觉 */
+		}
+		Corner_SetTarget(CORNER_T_EXIT);
+		return 1;
+	}
+
+	if (Corner_Active)                  /* 正在转：固定差速，不看视觉 */
+	{
+		Corner_SetTarget(CORNER_T_TURN);
+		return 1;
+	}
+
+	if (Corner_SegMileage < CORNER_COOLDOWN_CM)     /* 上一个弯的冷却期 */
+	{
+		Corner_SetTarget(CORNER_T_STRAIGHT);
+		return 1;
+	}
+
+#if TURN_USE_MILEAGE_TABLE
+	if ((Corner_SegMileage < (Turn_ThresholdCm[Corner_Index] - TURN_DIST_EARLY_CM)) ||
+	    (Corner_SegMileage > (Turn_ThresholdCm[Corner_Index] + TURN_DIST_LATE_CM)))
+	{
+		Corner_SetTarget(CORNER_T_STRAIGHT);        /* 里程对不上 = 假信号 */
+		return 1;
+	}
+#endif
+
+	Corner_Armed      = 1;
+	Corner_ArmMileage = Corner_SegMileage;         /* 调试：记下报弯那一刻的里程 */
+	Corner_SetTarget(CORNER_T_ARM);
+	return 1;
+}
+
+
+
+
 /* 这个弯转够了没有？每 5 毫秒问一次。                         （详见 Doc/代码说明.md §17） */
 static uint8_t Corner_TurnAngleReached(void)
 {
@@ -364,9 +466,8 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 				Corner_Index++;
 			}
 
-			/* 立刻改成直行目标。（详见 Doc/代码说明.md §19） */
-			target_left  = Speed_CornerExit;
-			target_right = Speed_CornerExit;
+			/* 立刻改成出弯速度（走统一入口 Corner_SetTarget，不再各写各的） */
+			Corner_SetTarget(CORNER_T_EXIT);
 		}
 	}
 	else if(Corner_Armed)//准备再往前一段距离开始转弯
@@ -391,6 +492,8 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 			 * 为什么在这里清：等里程那 20 厘米里车会小幅画龙，
 			 * 角度从那时开始累的话会带进弯里；从"真正开始转"起算才干净。 */
 			Gyro_ResetTotalAngle();//清理角度开始转弯
+		Corner_SetTarget(CORNER_T_TURN);   // 强转也要真的按转弯差速走
+		return;
 		}
 	}
 }
@@ -701,81 +804,8 @@ static void Task_30ms_Control(VisionData_t *vis_data)
     }
 #endif
 
-    /* 弯道转向状态机（三段） ----------（详见 Doc/代码说明.md §22） */
-    if (state == 2)//获取到视觉信号:可能是弯道
-    {
-        Corner_Clear = 0;//视觉说这里就是弯,清掉"已经离开"的计数
-        if (Corner_Done)//这个弯已经转够了
-        {
-            Corner_Armed  = 0;
-            Corner_Active = 0;
-            if ((App_Clock() - Corner_DoneTick) > CORNER_HANDOVER_MS)
-            {
-                // 直行够久了,强制交回视觉:不 return,落到下面的PD去。
-                // 编码器只管"大致转到90度",剩下的航向让视觉修(偏差已限幅±20,
-                // 最多算出差速 0.231*20=4.6,不会把车拧歪)。
-            }
-            else
-            {
-                // 刚转完这一小段先直行,让相机从"还在看弯道"缓过来
-                target_left  = Speed_CornerExit;//视觉说是弯就先当他是,后面再用里程校验
-                target_right = Speed_CornerExit;
-                return;
-            }
-        }
-        else if (Corner_Active)//里程到了:固定差速转,不看视觉偏差
-        {
-            target_left  = TURN_SPEED + TURN_VALUE;//完全不信视觉信息
-            target_right = TURN_SPEED - TURN_VALUE;
-            return;
-        }
-        else //刚报弯:先看是不是还在上一个弯的冷却期里
-        {
-            if (Corner_SegMileage < CORNER_COOLDOWN_CM)//还在转弯冷却
-            {
-                // 冷却中:上一个弯刚转完,车还没走够距离。
-                // 这时候视觉再喊弯,多半是同一个弯还没从画面里退出去 —— 当直道走,不转。
-                target_left  = Speed_Straight;//按直道最高速度跑
-                target_right = Speed_Straight;
-                return;
-            }
-
-#if TURN_USE_MILEAGE_TABLE//里程校验开启:审核视觉数据以及里程超阈值强转
-            /* 死区检查：视觉说是弯，但里程离本段阈值太远 → 当假信号。   2026-11-21 新（详见 Doc/代码说明.md §23） */
-            if ((Corner_SegMileage < (Turn_ThresholdCm[Corner_Index] - TURN_DIST_EARLY_CM)) ||
-                (Corner_SegMileage > (Turn_ThresholdCm[Corner_Index] + TURN_DIST_LATE_CM)))
-            {
-                target_left  = Speed_Straight;//前面的视觉转弯降速数据舍弃,还是直道继续跑
-                target_right = Speed_Straight;
-                return;
-            }
-#endif
-
-            Corner_Armed = 1;
-            /* 调试：记下视觉报弯这一刻的段内里程（这一帧已经被门禁放行） */
-            Corner_ArmMileage = Corner_SegMileage;
-            target_left  = TURN_ARM_SPEED;
-            target_right = TURN_ARM_SPEED;
-            return;
-        }
-    }
-    else
-    {
-        /* 要连续 3 次方向环(3 × 30 毫秒 = 90毫秒)都说"不是弯",才算这个弯真的过（详见 Doc/代码说明.md §24） */
-        if (Corner_Clear < 3) Corner_Clear++;
-        if (Corner_Clear >= 3)//过弯结束
-        {
-            /* 2026-11-21 修：正在转弯时不许被「视觉说不是弯」取消。（详见 Doc/代码说明.md §25） */
-            if (Corner_Active == 0)
-            {
-                Corner_Armed   = 0;
-                Corner_Done    = 0;
-                Corner_ArmDist = 0.0f;
-                Corner_Accum   = 0.0f;
-            }
-        }
-        //不 return,继续走下面的正常 PD 控制
-    }
+	/* 弯道拍板：状态机接管了目标速度就 return；没接管就往下走 PD。 */
+	if (Task_CornerDecide(state)) return;
 
     //直道pd
     float error = raw_error;//P项用这份：±3 以内算 0，防中心附近细微抖动
