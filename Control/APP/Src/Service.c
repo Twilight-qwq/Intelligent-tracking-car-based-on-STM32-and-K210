@@ -202,6 +202,19 @@ static float    Corner_SegMileage = 0.0f;   // 从上一个弯转完到现在走
  *   ③ 三个弯各看一次。三次的差值应该差不多；差得多说明里程刻度有问题。 */
 static float    Corner_ArmMileage       = 0.0f;  // 视觉报弯那一刻的段内里程（厘米）
 static float    Corner_TurnStartMileage = 0.0f;  // 真正开始转那一刻的段内里程（厘米）
+
+/* ===== 台架/调试统计量                                    2026-11-22 新增 =====
+ * Odo_LeftTotal / Odo_RightTotal：两轮从上车到现在一共转了多少个计数。
+ *   和 Corner_SegMileage 同步累加，但**永远不清零** —— 段内里程每过一个弯就清零，
+ *   要量"整段距离"必须有一个不清零的。里程台架就用它和卷尺对比，校 CM_PER_COUNT。
+ * VisionFrameCount：上电以来收到过多少帧视觉数据。台架上这个数在涨，说明串口通。
+ * VisionLostTicks ：连续多少次方向环没拿到新数据（0 ~ 11）。到 11 会触发停车保护。
+ *   台架上它一直停在 11，说明视觉断了；一直在 0~2 之间跳，说明数据正常。 */
+static float    Odo_LeftTotal      = 0.0f;   // 左轮累计计数（永不清零）
+static float    Odo_RightTotal     = 0.0f;   // 右轮累计计数（永不清零）
+static uint16_t VisionFrameCount   = 0;      // 已收到的视觉帧数（约 65535 溢出，36 fps 下约 30 分钟）
+static uint8_t  VisionLostTicks    = 0;      // 连续没拿到视觉数据的次数（0~11）
+static uint8_t  last_vision_state  = 0;      // 最近一帧的视觉状态（0/1/2/3），台架显示用
 static float    Turn_TargetAngle_Deg = TURN_TARGET_ANGLE_DEG; // 本次转弯的目标角(度)
 
 static uint8_t  Indicator_Tick    = 0;   //闪烁计数
@@ -298,13 +311,24 @@ uint32_t Service_Clock(void)
  *   要角度 -> Gyro_GetTotalAngle()；要清零 -> Gyro_ResetTotalAngle()
  *   模块不在时 Gyro_IsOk() 返回 0，直接退回编码器那套，不影响跑车
  * ========================================================================= */
-/* 台架模式（上电按住按键）下，五个通道显示什么。
- *   1 = 显示陀螺仪（WHO_AM_I / X / Y / Z / 累计角度）—— 2026-11-21 用来验陀螺仪，已验完
- *   0 = 显示编码器里程（左轮 counts / 右轮 counts / 换算厘米 / 锁定标志 / 0）
- * 2026-11-21 晚上翻成 0：陀螺仪验收已通过（WHO_AM_I=18、手转 90° 读数 -90、静置 30 秒不漂），
- *   现在要继续做的是「CM_PER_COUNT 现场校准」，那件事必须看 counts，所以这里要 0。
- * 只影响台架显示，不影响跑车时的任何行为。 */
-#define GYRO_BENCH_TEST   0
+/* ===== 遥测显示什么（VOFA+ 那 7 个通道）               2026-11-22 重做 =====
+ *
+ * 为什么改成「一个开关四选一」，而不是「按住键进台架就自动换」：
+ *   视觉台架要求车不动、但视觉照常工作；而台架模式（Calib_Mode）会把视觉读取整个跳过。
+ *   所以视觉台架不能算"台架模式"，它只是"换个显示内容"。
+ *   于是统一成一个编译开关，和车动不动无关。
+ *
+ *   0 = 跑车用（默认）：车轮目标/实际 ×4 + 视觉偏差 + 报弯里程 + 开转里程
+ *   1 = 视觉台架     ：状态 / 偏差 / 实时段内里程 / 报弯里程 / 开转里程 / 收到帧数 / 连丢次数
+ *                      用法：按住按键上电（电机不驱动），把车摆到赛道上不同位置，看这几个数
+ *   2 = 里程台架     ：左轮累计计数 / 右轮累计计数 / 实时段内里程 /
+ *                      累计换算厘米 ← 和卷尺比这个 / 报弯里程 / 开转里程
+ *                      用法：正常跑车跑一段已知长度，对比里程
+ *   3 = 陀螺仪台架   ：WHO_AM_I / X / Y / Z 原始读数 / 累计角度
+ *                      （相当于以前 GYRO_BENCH_TEST = 1；已验证通过，现在默认不用）
+ *
+ * 改完要重新编译烧录才生效。每种的通道含义见 Task_SendTelemetry() 里的注释。 */
+#define TELEMETRY_MODE    0
 
 
 void Service_Init(void)
@@ -396,6 +420,10 @@ void ServiceTask_5ms(uint32_t curr_ms)//内环速度环控制
 	 * 为什么不数整圈：整圈 998.8 厘米，按 ±2% 的刻度误差会累积到 ±20 厘米；
 	 * 每过一个弯清零，最长一段 350 厘米，误差只有 ±7 厘米。 */
 	Corner_SegMileage += ((actual_left + actual_right) * 0.5f) * CM_PER_COUNT;
+
+	/* 里程台架用：两轮累计计数，永不清零（段内里程每过一个弯会清零，量全程要用这个） */
+	Odo_LeftTotal  += actual_left;
+	Odo_RightTotal += actual_right;
 
 	//弯道转向:每5毫秒检查"这个弯转够了没有",够了就停
 	if(Corner_Active)
@@ -652,55 +680,82 @@ static void Task_BtCommand(void)
     }
 }
 
-//4.发送 VOFA+调试波形(100ms)
+//4.发送 VOFA+调试波形(100ms)　2026-11-22 改成按 TELEMETRY_MODE 选内容
 static void Task_SendTelemetry(void)
 {
     debugdata_t data;
 
-    if(Calib_Mode)//台架标定:五个通道换成"累计值", 方便读数
-    {
-#if GYRO_BENCH_TEST
-        /* 2026-11-21 陀螺仪台架测试（诊断版：找竖直轴）：
-         *   I0 = WHO_AM_I，应该是 18
-         *   I1 = X 轴原始读数
-         *   I2 = Y 轴原始读数
-         *   I3 = Z 轴原始读数
-         *   I4 = 累计角度（度，按 Z 轴积分）
-         * 为什么要看三个轴：手转 90° 时，只有和竖直轴对齐的那一个
-         *   会从 160 左右冲到上万（90度/秒 × 131 = 11790），
-         *   另外两个几乎不动。哪个动了，车里就用哪个轴算角度。 */
-        data.target_left  = (float)Gyro_GetWhoAmIValue(); /* I0 */
-        data.actual_left  = (float)Gyro_GetAxisXRaw();    /* I1 */
-        data.target_right = (float)Gyro_GetAxisYRaw();    /* I2 */
-        data.actual_right = (float)Gyro_GetAxisZRaw();    /* I3 */
-        data.error        = Gyro_GetTotalAngle();         /* I4 */
-        data.mileage_arm  = 0.0f;                         /* I5 台架模式下不用 */
-        data.mileage_turn = 0.0f;                         /* I6 台架模式下不用 */
-        (void)Calib_Frozen;                          /* 这个模式下用不到，避免"设了没用"的警告 */
+#if (TELEMETRY_MODE == 3)
+    /* ===== 3 陀螺仪台架 =====
+     * I0 = WHO_AM_I（ICM-20602 应该是 18）
+     * I1 = X 原始读数   I2 = Y 原始读数   I3 = Z 原始读数
+     * I4 = 累计角度（度）—— 静置时应几乎不动
+     * 注意 GYRO_READ_ALL_AXES = 0 时 I1/I2 恒为 0，这是正常的。 */
+    data.target_left  = (float)Gyro_GetWhoAmIValue();
+    data.actual_left  = (float)Gyro_GetAxisXRaw();
+    data.target_right = (float)Gyro_GetAxisYRaw();
+    data.actual_right = (float)Gyro_GetAxisZRaw();
+    data.error        = Gyro_GetTotalAngle();
+    data.mileage_arm  = 0.0f;
+    data.mileage_turn = 0.0f;
+
+#elif (TELEMETRY_MODE == 1)
+    /* ===== 1 视觉台架 =====
+     * 车可以不动（按住按键上电，电机不驱动），把车摆到赛道上不同位置看这几个数。
+     * I0 = 视觉状态（0 直道 / 1 预警 / 2 有弯 / 3 终点）
+     * I1 = 视觉偏差（像素）
+     * I2 = 实时段内里程（厘米）
+     * I3 = 报弯里程（锁存）      I4 = 开转里程（锁存）
+     * I5 = 上电以来收到多少帧     I6 = 连续没收到几次（到 11 会触发停车保护） */
+    data.target_left  = (float)last_vision_state;
+    data.actual_left  = last_vision_error;
+    data.target_right = Corner_SegMileage;
+    data.actual_right = Corner_ArmMileage;
+    data.error        = Corner_TurnStartMileage;
+    data.mileage_arm  = (float)VisionFrameCount;
+    data.mileage_turn = (float)VisionLostTicks;
+
+#elif (TELEMETRY_MODE == 2)
+    /* ===== 2 里程台架 =====
+     * 正常跑车（视觉循迹），跑一段已知长度，用卷尺量完对比 I3。
+     * I0 = 左轮累计计数      I1 = 右轮累计计数
+     * I2 = 实时段内里程（厘米）
+     * I3 = 两轮平均累计换算成厘米 ← 和卷尺比这个
+     * I4 = 报弯里程          I5 = 开转里程          I6 = 0 */
+    data.target_left  = Odo_LeftTotal;
+    data.actual_left  = Odo_RightTotal;
+    data.target_right = Corner_SegMileage;
+    data.actual_right = (Odo_LeftTotal + Odo_RightTotal) * 0.5f * CM_PER_COUNT;
+    data.error        = Corner_ArmMileage;
+    data.mileage_arm  = Corner_TurnStartMileage;
+    data.mileage_turn = 0.0f;
+
 #else
-        data.target_left  = Calib_Left;              // ch1 左轮累计 counts
-        data.actual_left  = Calib_Right;             // ch2 右轮累计 counts
-        data.target_right = Calib_Cm;                // ch3 里程(换算厘米) <- 和卷尺比这个
-        data.actual_right = Calib_Frozen ? 1.0f : 0.0f;// ch4 =1 表示数值已锁定
-        data.error        = 0.0f;                    // ch5 保留
-        data.mileage_arm  = 0.0f;                    // ch6 台架模式下不用
-        data.mileage_turn = 0.0f;                    // ch7 台架模式下不用
+    /* ===== 0 跑车（默认，跑的时候发这一组）=====
+     * I0/I2 = 左右轮目标速度   I1/I3 = 左右轮实际速度
+     * I4    = 视觉偏差
+     * I5    = 报弯里程（锁存）  I6 = 开转里程（锁存）
+     *
+     * 后面两个就是转弯点标定要看的：跑完一圈，三个弯各给一对数。
+     * 报弯里程 = 视觉说"有弯"那一刻的段内里程
+     * 开转里程 = 真正开始转那一刻的段内里程，两者之差应 ≈ TURN_ARM_CM */
+    data.target_left  = target_left;
+    data.actual_left  = actual_left;
+    data.target_right = target_right;
+    data.actual_right = actual_right;
+    data.error        = last_vision_error;
+    data.mileage_arm  = Corner_ArmMileage;
+    data.mileage_turn = Corner_TurnStartMileage;
 #endif
-    }
-    else
-    {
-        data.target_left  = target_left;
-        data.actual_left  = actual_left;
-        data.target_right = target_right;
-        data.actual_right = actual_right;
-        data.error        = last_vision_error; // 使用刚才记录的误差
-        /* 这两路是转弯点标定用的锁存值（不是实时里程）：
-         *   报弯里程 = 视觉说"有弯"那一刻的段内里程
-         *   开转里程 = 真正开始转那一刻的段内里程
-         * 跑一圈看这两个数，就知道 TURN_ARM_CM 和 Turn_ThresholdCm 该填多少。 */
-        data.mileage_arm  = Corner_ArmMileage;
-        data.mileage_turn = Corner_TurnStartMileage;
-    }
+
+    /* 下面这四行只是"用一下"这些变量，把编译告警消掉。
+     * TELEMETRY_MODE = 0 时它们不参与显示，但仍然在后台照常更新 —— 想看随时切模式即可。
+     * 不影响任何行为，也不占运行时间（编译后什么都不生成）。 */
+    (void)VisionFrameCount;
+    (void)VisionLostTicks;
+    (void)last_vision_state;
+    (void)Calib_Frozen;
+
     Debug_log(&data);
 }
 
@@ -712,6 +767,7 @@ static uint8_t Task_FetchVisionData(VisionData_t *vis_data)
     if(Protocol_GetVision(vis_data) == 0)//没有新数据
     {
         lostdata_time++;
+        VisionLostTicks = lostdata_time;   /* 视觉台架显示用：连续没拿到几次 */
         // 2026-11-20 夜里:上电后还没收到过任何一帧时,不要因为超时就把车停掉。
         // 原因:日志里第一行是「已跑 9.9 秒」—— K210 从上电到开始发数据要 10 秒左右。
         // 这 10 秒里按启动键,车会「启动 → 0.33 秒后被超时停掉」,
