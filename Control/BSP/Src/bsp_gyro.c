@@ -143,6 +143,49 @@ static int16_t  Gyro_BiasSampleMin         = 0;      /* 采零偏期间，这一
 static int16_t  Gyro_BiasSampleMax         = 0;      /* 采零偏期间，这一批样本的最大值 */
 static uint8_t  Gyro_BiasRestartCount      = 0;      /* 已经因为「车在动」重采了几次 */
 
+/* ===== 静止重估零偏用的变量（2026-11-24 凌晨加）=====
+ * 思路：把「连续 100 个样本的原始读数」攒成一个统计窗口，
+ *   一看它就天然能算出平均值（新零偏）和极差（判断车到底动没动）。 */
+#define GYRO_STILL_SAMPLES      100     /* 一个统计窗口多少样本：100 × 5 毫秒 = 0.5 秒 */
+#define GYRO_STILL_SPREAD_MAX   40      /* 这 0.5 秒里原始读数的极差要小于这么多计数才算「没动」。
+                                         * 65.5 计数 = 1 度/秒，所以 40 计数 ≈ 0.6 度/秒。
+                                         * 取这个数：静止时噪声一般十几计数，车只要在转就是几百计数，
+                                         * 中间留了很宽的余量，不会把「真的在转」误判成静止。 */
+static float    Gyro_WhileStillSum         = 0.0f;   /* 本窗口的原始读数之和 */
+static uint16_t Gyro_WhileStillCount       = 0;      /* 本窗口已经攒了几个样本 */
+static int16_t  Gyro_WhileStillMin         = 0;      /* 本窗口原始读数最小值 */
+static int16_t  Gyro_WhileStillMax         = 0;      /* 本窗口原始读数最大值 */
+
+/* 静止重估零偏的总开关（2026-11-24 凌晨 00:5x 加，当天就栽了一次）
+ *
+ * 为什么要这个开关（血的教训）：
+ *   第一版没有开关，只要「0.5 秒内读数几乎不动」就重估零偏并把角度清零。
+ *   实车马上出问题：车贴在内侧线上进弯，原地打转被卡住、根本转不动，
+ *   陀螺仪读数就是「几乎不动」→ 被判成静止 → 累计角度被清零 →
+ *   永远到不了目标角度 → 转弯只能等 600 毫秒超时 → 实测转了 135 度。
+ *
+ * 所以现在只允许「车被命令停车」时才做这件事。
+ * 由 Control 层调用 Gyro_SetStillTrim(1/0) 来开关：
+ *   CarRun_State == 0（停车）→ 1
+ *   CarRun_State == 1（在跑）→ 0
+ * 跑车期间这个机制一次都不会触发，转弯绝无可能被它清零。 */
+static uint8_t  Gyro_StillTrimEnable       = 0;
+
+void Gyro_SetStillTrim(uint8_t enable)
+{
+	if (enable)
+	{
+		Gyro_StillTrimEnable = 1;
+	}
+	else
+	{
+		Gyro_StillTrimEnable = 0;
+		/* 关掉的时候把半截窗口扔掉：不然下次开起来会混进跑车时的旧样本 */
+		Gyro_WhileStillSum   = 0.0f;
+		Gyro_WhileStillCount = 0;
+	}
+}
+
 /* 连续失败这么多次（3 × 5 毫秒 = 15 毫秒）就试着救一次总线。
  * 原来是 10 次（50 毫秒）：这 50 毫秒里每次读失败都直接 return，角度完全不积分，
  * 转弯中撞上一次就是 240 度/秒 × 0.05 秒 ≈ 12 度没了。
@@ -462,6 +505,8 @@ void Gyro_Init(void)
 	Delay_ms(GYRO_CHIP_STARTUP_WAIT_MS);
 
 	Gyro_BiasSkipCount = GYRO_BIAS_SKIP_SAMPLES;
+	Gyro_WhileStillSum   = 0.0f;
+	Gyro_WhileStillCount = 0;
 }
 
 /* 每 5 毫秒调一次：前 1 秒测零偏，之后按 Z 轴积分
@@ -604,6 +649,55 @@ void Gyro_Update(uint32_t current_ms)
 	rate_degrees_per_second = ((float)axis_z_raw - Gyro_ZeroBias)
 	                          / GYRO_COUNTS_PER_DEGREE_PER_SECOND;
 
+	/* ===== 静止重估零偏（2026-11-24 凌晨加，用户报「I3 没跑也一直递减」）=====
+	 *
+	 * 为什么要它：
+	 *   零偏只在上电后那 1 秒采一次，之后再也不更新。可是用户上电时正在摆车，
+	 *   摆车的转动会被平均进零偏；芯片热起来以后零点也会飘。
+	 *   于是「原始读数 − 零偏」不再是 0，而是剩一个固定偏差。
+	 *   下面那个 ±1 度/秒的死区是按**每一拍的转速**挡的，只要这个偏差超过 1 度/秒，
+	 *   死区就整个失效 —— 静止时也在积分，累计角度一路减到很大的负数。
+	 *
+	 * 怎么判「车真的静止」：
+	 *   连续 GYRO_STILL_SAMPLES 个样本（100 个 × 5 毫秒 = 0.5 秒）里，
+	 *   原始读数的「最大值 − 最小值」小于 GYRO_STILL_SPREAD_MAX（40 计数 ≈ 0.6 度/秒）。
+	 *   车在动的时候，哪怕只是慢慢转，这 0.5 秒里的读数也会散得很开，绝对不满足。
+	 *
+	 * 满足了就干两件事：
+	 *   ① 把这 0.5 秒的平均值当新的零偏（车不动时真实角速度一定是 0，平均值就是零点）
+	 *   ② 把累计角度清零（此时清零不会冤枉任何真实转动）
+	 *
+	 * 为什么不会害到转弯：
+	 *   转弯时转速是几百计数，0.5 秒内必然超过 40 计数的散布，判据不成立，
+	 *   所以转弯全程零偏和角度都不会被这个机制碰。 */
+	if (Gyro_StillTrimEnable)
+	{
+		if (Gyro_WhileStillCount == 0)
+		{
+			Gyro_WhileStillMin = axis_z_raw;
+			Gyro_WhileStillMax = axis_z_raw;
+		}
+		else
+		{
+			if (axis_z_raw < Gyro_WhileStillMin) Gyro_WhileStillMin = axis_z_raw;
+			if (axis_z_raw > Gyro_WhileStillMax) Gyro_WhileStillMax = axis_z_raw;
+		}
+		Gyro_WhileStillSum += (float)axis_z_raw;
+		Gyro_WhileStillCount++;
+
+		if (Gyro_WhileStillCount >= GYRO_STILL_SAMPLES)
+		{
+			if (((int32_t)Gyro_WhileStillMax - (int32_t)Gyro_WhileStillMin)
+			    < GYRO_STILL_SPREAD_MAX)
+			{
+				Gyro_ZeroBias          = Gyro_WhileStillSum / (float)Gyro_WhileStillCount;
+				Gyro_TotalAngleDegrees = 0.0f;   /* 车是静止的，之前累的那些都是漂出来的 */
+			}
+			Gyro_WhileStillCount = 0;
+			Gyro_WhileStillSum   = 0.0f;
+		}
+	}
+
 	/* 死区：小于 1 度/秒当作没转，这样静止时角度不会慢慢往上爬 */
 	if ((rate_degrees_per_second > GYRO_RATE_DEADBAND_DPS)
 	    || (rate_degrees_per_second < -GYRO_RATE_DEADBAND_DPS))
@@ -659,6 +753,8 @@ uint8_t Gyro_TryRecover(void)
 	Gyro_BiasSkipCount       = GYRO_BIAS_SKIP_SAMPLES;
 	Gyro_DtReady             = 0;                   /* 第一次积分按默认周期算 */
 	Gyro_TotalAngleDegrees   = 0.0f;
+	Gyro_WhileStillSum       = 0.0f;                /* 静止统计窗口也清掉，别用半截的 */
+	Gyro_WhileStillCount     = 0;
 
 	Gyro_IsAvailable = 1;
 	return 1;

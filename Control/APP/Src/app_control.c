@@ -1,4 +1,4 @@
-﻿#include <stdint.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <math.h>
 #include "app_control.h"
@@ -60,8 +60,8 @@ static pid_line_t pid_l;//方向环结构体
 
 static uint8_t CarRun_State = 0;//启停状态变量
 
-static float Speed_Straight   = 30.0f; //直道基速(电机上限37，留7个count给差速)
-static float Speed_SmallAngle = 25.0f; //小角度(直角,钝角)基速
+static float Speed_Straight   = 20.0f; //直道基速(电机上限37，留7个count给差速)  ← 用户手改(原30)，方便测试不用每次发蓝牙
+static float Speed_SmallAngle = 20.0f; //小角度(直角,钝角)基速  ← 用户手改(原25)
 static float Speed_LargeAngle = 15.0f; //大角度(锐角)基速
 static float target_left = 0.0f;//目标左轮速度
 static float target_right = 0.0f;//目标右轮速度
@@ -132,7 +132,15 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
   /* 2026-11-23 启用「钝角弯也当弯道」后，这张表真正生效。第一项从 200 改成 180：
    * 三条实车数据都指向第一个弯心在 180（报弯 151~154、开转 170.6~171.7 都吻合）。
    * 后四项还是几何值：四段 110 / 240 / 240 / 110（按弯心到弯心），等实测替换。 */
-  static const float Turn_ThresholdCm[TURN_TABLE_SIZE] = { 180.0f, 110.0f, 240.0f, 240.0f, 110.0f };
+  static const float Turn_ThresholdCm[TURN_TABLE_SIZE] = { 189.0f, 110.0f, 240.0f, 240.0f, 110.0f };
+  /* 第 1 项 180 → 200 → 197 → 189（2026-11-24 凌晨，实车一次一次标定）。
+   * 实测记录：
+   *   阈值 180 → 开转 169.3 厘米 → 用户「早约一拃（20 厘米）」
+   *   阈值 200 → 开转 189.3 厘米 → 用户「略晚一点点」
+   *   阈值 197 → 开转 186.3 厘米 → 用户「还是晚了」→ 用户直接指定再减 8
+   * 说明：我按「每 1 厘米阈值 = 1.15 厘米车身」插值算出的 197 被实测否掉了，
+   *   实际灵敏度比这更低（要减 8 才够）。所以**别再用插值，直接按用户的话加减**。
+   * 后面四项 {110,240,240,110} 全是图纸值，同样要一个一个这样试出来。 */
   /* 2026-11-23 深夜：全部乘 0.87（90→78、38.5→33.5、103→90）。
    * 原因：差速撤掉那一刻车身还有约 240 度/秒的角速度，靠惯性会再多转一段。
    * 实测（陀螺仪数据）：命令 90° 停到 −85、峰值 −103 → 多转 18°；
@@ -173,8 +181,13 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
 /* 等里程这 16 厘米里，方向环允许的最大差速（单位同目标速度，计数/5ms）。
  * 2026-11-23 深夜加：把方向环放回这段以后，用户反馈「弯前画龙」——
  * 原因是弯口附近九行里常常只剩 1~3 行可用，偏差本身在跳，方向环全权跟着跳就摆起来了。
- * 压到 ±3（20 档的 15%）以后，它只做「慢慢往中间靠」，不会被噪声带着甩。 */
-#define TURN_ARM_TURN_MAX  3.0f
+ * 压到 ±3（20 档的 15%）以后，它只做「慢慢往中间靠」，不会被噪声带着甩。
+ *
+ * 2026-11-24 凌晨：±3 → ±1.2。用户反馈「弯前歪头」，实测算一下：
+ *   差速 3、基速 15 → 左 18 右 12，偏航 = (18−12)×2.804÷13 = 74 度/秒；
+ *   这 16 厘米走 0.38 秒 → 最多拧 28 度。一个弯总共才 90 度，弯前先拧 28 度太多。
+ *   收到 1.2：偏航 = 2×1.2×2.804÷13 = 30 度/秒 → 0.38 秒只拧 11 度，够「慢慢靠中间」。 */
+#define TURN_ARM_TURN_MAX  1.2f
 
 /* 转完90度之后,最多再直行这么久,就得把方向盘交回视觉。（详见 Doc/代码说明.md §8） */
 #define CORNER_HANDOVER_MS 500      // 转完之后最多直行 500 毫秒
@@ -293,7 +306,21 @@ void App_Init(void)
 	SysTimer_Init();
 	PID_VelocityLoop_Init(&pid_v_left,100.0f,10.0f,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//台架调定 Kp=100 Ki=10
 	PID_VelocityLoop_Init(&pid_v_right,100.0f,10.0f,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//台架调定，左右同参数
-	PID_LineLoop_Init(&pid_l,0.231f,0.53f,Speed_Straight,-(float)Speed_Straight);//方向环 Kp=0.231 Kd=0.53（2026-11-20 实车调定：0.5 画龙、0.1 偏钝，0.231/0.53 直道可用）
+	PID_LineLoop_Init(&pid_l,0.15f,0.53f,Speed_Straight,-(float)Speed_Straight);
+	/* 方向环 Kp / Kd（2026-11-24 凌晨，第二次调）
+	 *
+	 * 上一版改成 0.18 / 1.10，用户实车反馈「更大了，十分严重的画龙」。
+	 * 错在 Kd：偏差每帧会单帧跳 10~23 格（见 mid_pid.c 里 LIMIT_LINE_DIFF_MAX 那段实测），
+	 *   Kd 从 0.53 提到 1.10，等于假跳变抽的鞭子也翻倍 —— 那不是阻尼，是往火上浇油。
+	 *
+	 * 这一版：
+	 *   Kp 0.231 → 0.15   （收 P，画龙的"油门"。0.1 那趟太钝，所以停在这中间）
+	 *   Kd 1.10  → 0.53   （退回 2026-11-20 实车调定的值）
+	 *   D 的每帧限幅 8 → 4（去 mid_pid.c 改；真摆动每帧只变 3.4 格，限幅 4 不影响真阻尼，
+	 *                      但能把「跳 20 格」的假信号砍掉一大半）
+	 * 判据：这趟只看摆的幅度有没有变小，不看能不能跑完全程。
+	 */
+
 	//Kp 上限 ≈ 1 / (k × 死区时间)
     WatchDog_Init();
 }
@@ -389,6 +416,13 @@ void AppTask_100ms(uint32_t curr_ms)//开关控制与数据发送
 	
     if(curr_ms - task_last_100ms < 100) return;
     task_last_100ms = curr_ms;
+
+    /* 陀螺仪「静止重估零偏」只在停车时允许（2026-11-24 凌晨加）。
+     * 为什么必须跟着 CarRun_State 走：车贴内侧线进弯、原地打转被卡住转不动时，
+     * 陀螺仪读数就是「几乎不动」，会被误判成静止、把累计角度清零，
+     * 于是永远到不了目标角度 → 转弯只能等 600 毫秒超时 → 实测转了 135 度。
+     * 放在 Calib_Mode 判断之前：台架标定模式下车本来就不动，正好让它重估零偏。 */
+    Gyro_SetStillTrim((CarRun_State == 0) ? 1 : 0);
 
     if(Calib_Mode)//台架标定模式:只管发波形,不处理启停、不做停车清理
     {
@@ -1108,6 +1142,29 @@ static void Task_30ms_Control(VisionData_t *vis_data)
 
     float vision_error = (float)vis_data->error;//获取视觉报的像素偏差
     last_vision_error = vision_error;//波形发原始偏差，方便看视觉本身跳不跳
+
+    /* 【视觉固定偏移补偿】2026-11-24 凌晨加。
+     *
+     * 实测（车不动、摆在起点线正中、连测 90 秒）：偏差稳定读 **−6**。
+     *   同一次还把车挪到最左、最右对比：最左 +20、正中 −6、最右 −22
+     *   → 符号是对的（左正右负），但零点偏了 6 格。
+     *   6 格 × 0.48 厘米 = **2.9 厘米**。
+     * 而且这不是偶然：2026-11-23 夜里那次静止验光（Doc §20.3）记的也是「偏差稳在 −6」，
+     *   两次独立测量一模一样，说明是**固定的零点偏移**，不是摆偏了。
+     *
+     * 后果（用户看到的三个现象连成一条链）：
+     *   零点偏 −6 → 方向环一直以为车偏在右边 → 一直往左拉
+     *   → 车头长期朝左歪 4~6 度（就是「左歪头」）
+     *   → 到了弯口，车已经朝左歪着，再右转 78 度就少转那么几度
+     *   → 出来压在外侧（左）线上（「转弯延迟、压外侧线」）。
+     *
+     * 做法：喂给方向环之前把 6 格加回去，让它以为「摆正 = 0」。
+     * 为什么放在这里而不是去改 K210：卡现在拆不下来（跑车要插着自己），
+     *   而且这个偏移量是「这台车 + 这个摄像头安装角度」的量，放在 STM32 这边调起来快。
+     * 以后要是换了摄像头安装角度，只改这一个数。 */
+    #define LINE_ERR_OFFSET   3.0f
+    vision_error += LINE_ERR_OFFSET;
+    last_vision_error = vision_error;   /* 波形也发补偿后的，方便对账 */
 
     float raw_error = vision_error;//喂给PD的那一份：先限幅
     if (raw_error >  LIMIT_LINE_ERR_MAX) raw_error =  LIMIT_LINE_ERR_MAX;
