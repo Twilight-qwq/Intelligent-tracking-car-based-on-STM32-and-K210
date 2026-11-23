@@ -79,11 +79,14 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
 
 /* 里程查表：按「这是第几个要甩的弯」决定转多少度   2026-11-21 新增（详见 Doc/代码说明.md §3） */
 #define TURN_USE_MILEAGE_TABLE  1//里程校验开关
-#define TURN_USE_38_BENDS       0//决定钝角弯要不要也要当弯道处理
+#define TURN_USE_38_BENDS       1//决定钝角弯要不要也要当弯道处理（2026-11-23 改 1：钝角弯靠 PD 太勉强）
 #define TURN_ALLOW_FORCE        0//决定是否在视觉迟迟不报弯的时候根据里程强行报弯
 
 /* 死区：里程离本段阈值太远，就当视觉在报假信号，不转。（详见 Doc/代码说明.md §4） */
 #define TURN_DIST_EARLY_CM      30.0f   /* 允许比阈值早这么多厘米（门就开在这里） */
+/* 2026-11-23：试过改成 45，结果 1 号弯在 135 厘米就开始接受报弯 → 提前开转 → 掉头。
+ * 早侧这道闸是全局的，不能为了救一个弯放宽。锐角弯改成靠「阈值 325→299」解决：
+ * 阈值降下来以后门自然就开得早（269 厘米），视觉 267 厘米的报弯下一帧就能进。 */
 #define TURN_DIST_LATE_CM       10.0f   /* 允许比阈值晚这么多厘米（只给刻度误差留一点） */
 
 /* 里程兜底：超过阈值这么多厘米还没等到视觉报弯，就强行转（要 TURN_ALLOW_FORCE = 1 才生效） */
@@ -99,12 +102,17 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
 
 #if TURN_USE_38_BENDS
   #define TURN_TABLE_SIZE 5
-  static const float Turn_ThresholdCm[TURN_TABLE_SIZE] = { 200.0f, 110.0f, 240.0f, 240.0f, 110.0f };
+  /* 2026-11-23 启用「钝角弯也当弯道」后，这张表真正生效。第一项从 200 改成 180：
+   * 三条实车数据都指向第一个弯心在 180（报弯 151~154、开转 170.6~171.7 都吻合）。
+   * 后四项还是几何值：四段 110 / 240 / 240 / 110（按弯心到弯心），等实测替换。 */
+  static const float Turn_ThresholdCm[TURN_TABLE_SIZE] = { 180.0f, 110.0f, 240.0f, 240.0f, 110.0f };
   static const float Turn_AngleDeg[TURN_TABLE_SIZE]     = {  90.0f,  38.5f, 103.0f,  38.5f,  90.0f };
 #else
   #define TURN_TABLE_SIZE 3
   /* 阈值单位：厘米，从「起点 / 上一个弯转完」算起。（详见 Doc/代码说明.md §6） */
-  static const float Turn_ThresholdCm[TURN_TABLE_SIZE] = { 180.0f, 325.0f, 330.0f };
+  /* 第三项暂时不动；第一项 180 和实测吻合（车在 170.7 开转）；第二项 325 → 299，
+   * 依据：视觉在 267 厘米报弯、提前量和 1 号弯一样约 27 厘米 → 真实弯心约 294~299。 */
+  static const float Turn_ThresholdCm[TURN_TABLE_SIZE] = { 180.0f, 299.0f, 330.0f };
   static const float Turn_AngleDeg[TURN_TABLE_SIZE]     = {  90.0f, 103.0f,  90.0f };
 #endif
 
@@ -130,7 +138,11 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
 #define CORNER_HANDOVER_MS 500      // 转完之后最多直行 500 毫秒
 
 /* 弯道冷却（厘米）。（详见 Doc/代码说明.md §9） */
-#define CORNER_COOLDOWN_CM 70.0f//过弯之后再走70cm才允许再次过弯,否则不算
+/* 弯道冷却（厘米）。（详见 Doc/代码说明.md §9）
+ * 2026-11-23 启用钝角弯（5 个弯）后从 70 降到 50：
+ * 两个钝角弯之间最短一段只有 110 厘米，门开在 110−30 = 80，冷却 70 只剩 10 厘米余量；
+ * 降到 50 之后余量 30 厘米，摩擦/打滑抖一下也不会把下一段的判定起点盖住。 */
+#define CORNER_COOLDOWN_CM 50.0f//过弯之后再走50cm才允许再次过弯,否则不算
 
 /* 终点兜底（2026-11-23 新增）：最后一个弯转完之后再走这么多厘米就停车。
  * 为什么需要：视觉只发 0/1/2，「case 3 终点急停」永远触发不了（详见 Doc/代码说明.md §26）。
@@ -141,6 +153,15 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
 
 /* 偏差限幅(像素)。（详见 Doc/代码说明.md §10） */
 #define LIMIT_LINE_ERR_MAX 30.0f
+/* 2026-11-23 新增两条限幅，治「拐出弯时车身偏一边，方向环反过来把车拧过头」：
+ * 1) P 项饱和：偏差超过 10 像素就按 10 算。
+ *    为什么：实测拐出弯偏差到 −24，P 项 0.231×24 = 5.5，加上 D 项 4.2 一共 9.7，
+ *    在 25 档上相当于 39% 差速 = 185°/秒，0.3 秒就多拧 55° —— 看着像掉头。
+ *    饱和以后大偏差只要求「转回来」，不要求「猛打」。
+ * 2) 差速上限：从「最多等于基础速度」压到 35% 基础速度。
+ *    为什么：原来一个轮子能停转，那是原地掉头级别的动作，循迹用不上。 */
+#define LIMIT_P_ERR_MAX    10.0f
+#define TURN_RATIO_MAX     0.35f
 
 static uint8_t  Corner_Armed  = 0;    // 1=视觉已经报弯,正在等里程
 static uint8_t  Corner_Active = 0;    // 1=正在按固定差速转弯
@@ -896,6 +917,10 @@ static void Task_30ms_Control(VisionData_t *vis_data)
     {
         error = 0.0f;
     }
+    /* P 项饱和（2026-11-23 新增）：偏差再大也只按 10 像素算。
+     * 拐出弯时偏差能到 −24，不饱和的话 P 项一个人就给出 5.5 的差速。 */
+    if(error >  LIMIT_P_ERR_MAX) error =  LIMIT_P_ERR_MAX;
+    if(error < -LIMIT_P_ERR_MAX) error = -LIMIT_P_ERR_MAX;
 
     float turn = PID_L_Calc(&pid_l,error,raw_error);//差速大小(P用error，D用raw_error)
     float base_speed = Speed_Straight;
@@ -914,8 +939,14 @@ static void Task_30ms_Control(VisionData_t *vis_data)
         return;
     }
 
-    if (turn > base_speed)  turn = base_speed;
-    if (turn < -base_speed) turn = -base_speed;
+    /* 差速上限（2026-11-23 改）：原来是 ±base_speed（等于让一个轮子停转），
+     * 那是原地掉头级别的动作，循迹用不上。压到 35% 之后：
+     * 20 档最多差 7、25 档最多差 8.75、15 档最多差 5.25，对应约 100°/秒的上限。 */
+    {
+        float turn_max = base_speed * TURN_RATIO_MAX;
+        if (turn >  turn_max) turn =  turn_max;
+        if (turn < -turn_max) turn = -turn_max;
+    }
     target_left = base_speed + turn;
     target_right = base_speed - turn;
 }
