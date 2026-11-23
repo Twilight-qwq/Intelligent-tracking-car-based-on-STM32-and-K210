@@ -1,4 +1,4 @@
-﻿#include <stdint.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <math.h>
 #include "app_control.h"
@@ -46,6 +46,7 @@ static void Task_5ms_CornerStep(uint32_t curr_ms);
 static void Corner_SetTarget(uint8_t kind);
 static uint8_t Task_CornerDecide(uint8_t state);
 static uint8_t Corner_TurnAngleReached(void);
+static uint8_t Task_5ms_FinishStep(void);
 
 static uint32_t task_last_5ms = 0;//5ms时间片
 static uint32_t task_last_10ms = 0;//10ms时间片
@@ -125,6 +126,13 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
 /* 弯道冷却（厘米）。（详见 Doc/代码说明.md §9） */
 #define CORNER_COOLDOWN_CM 70.0f//过弯之后再走70cm才允许再次过弯,否则不算
 
+/* 终点兜底（2026-11-23 新增）：最后一个弯转完之后再走这么多厘米就停车。
+ * 为什么需要：视觉只发 0/1/2，「case 3 终点急停」永远触发不了（详见 Doc/代码说明.md §26）。
+ * 数字怎么来的：最后一段中心线 98.8 厘米，转完弯那一刻已经过去约 5 厘米 → 到起点线约 93.8；
+ *   再留 5 厘米保证确实过了线 → 99。实测完按「过线位置」微调这一个数就行。 */
+#define FINISH_USE_MILEAGE 1        // 里程兜底停车开关：1=开。/ 0=关（关掉就只剩视觉那条死路）
+#define FINISH_STOP_CM     99.0f    // 最后一个弯转完后的停车里程（厘米）
+
 /* 偏差限幅(像素)。（详见 Doc/代码说明.md §10） */
 #define LIMIT_LINE_ERR_MAX 30.0f
 
@@ -142,6 +150,7 @@ static uint32_t Corner_DoneTick = 0;   // 转完的时刻, 供"限时交回视�
  * 少一个变量、少一处会不一致的地方。 */
 static uint8_t  Corner_Index      = 0;      // 正要去第几个要甩的弯(查表下标)
 static float    Corner_SegMileage = 0.0f;   // 从上一个弯转完到现在走了多少厘米
+static uint8_t  Finish_Armed      = 0;      // 1=最后一个弯已经转完,正在数停车里程（终点兜底）
 
 /* 调试：锁存「报弯里程」和「开转里程」      2026-11-22 新增（详见 Doc/代码说明.md §11） */
 static float    Corner_ArmMileage       = 0.0f;  // 视觉报弯那一刻的段内里程（厘米）
@@ -242,6 +251,11 @@ void AppTask_5ms(uint32_t curr_ms)//内环速度环控制
 	/* 里程台架用：两轮累计计数，永不清零（段内里程每过一个弯会清零，量全程要用这个） */
 	Odo_LeftTotal  += actual_left;//总左里程
 	Odo_RightTotal += actual_right;//总右里程
+
+	/* 终点兜底：最后一个弯转完之后按里程停车。
+	 * 返回 1 = 这一拍已经停车了，必须马上 return —— 不然后面算出来的 PWM
+	 * 会把刚写进去的 0 覆盖掉。（详见 Doc/代码说明.md §26） */
+	if (Task_5ms_FinishStep()) return;
 
 	/* 弯道转向：这一段单独成函数，见文件后半的 Task_5ms_CornerStep()。 */
 	Task_5ms_CornerStep(curr_ms);
@@ -471,6 +485,13 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 				Corner_Index++;
 			}
 
+			/* 最后一个弯也转完了 → 从这一刻开始数「离终点还有多远」（终点兜底）。
+			 * 放在清零之后：停车里程就是从这一刻重新数的，只数 94 厘米，误差小。 */
+			if (Corner_Index + 1 >= TURN_TABLE_SIZE)
+			{
+				Finish_Armed = 1;
+			}
+
 			/* 立刻改成出弯速度（走统一入口 Corner_SetTarget，不再各写各的） */
 			Corner_SetTarget(CORNER_T_EXIT);
 		}
@@ -505,6 +526,25 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 			Corner_SetTarget(CORNER_T_TURN);
 		}
 	}
+}
+
+
+/* 终点兜底：最后一个弯转完之后，按里程停车。每 5 毫秒问一次。   2026-11-23 新增
+ * 为什么不能用视觉：K210 那份程序只发 0/1/2，控制端 case 3 永远走不到（详见 Doc/代码说明.md §26）。
+ * 为什么用段内里程：只数 94 厘米，CM_PER_COUNT 差 3% 也才 3 厘米；全程数 998 厘米，3% 就是 30 厘米。
+ * 返回 1 = 这一拍已经停车了，调用者别再算 PID、别再动电机。 */
+static uint8_t Task_5ms_FinishStep(void)
+{
+#if FINISH_USE_MILEAGE
+	if (Finish_Armed == 0) return 0;                    // 还没转完最后一个弯
+	if (Corner_SegMileage < FINISH_STOP_CM) return 0;   // 还没走够停车里程
+	Finish_Armed = 0;                                   // 只停一次，别反复进
+	CarRun_State = 0;                                   // 进停车状态(100ms 任务会做安全清理)
+	Motor_SetDuty(0, 0);                                // 立刻断输出,不等那 100 毫秒
+	return 1;
+#else
+	return 0;
+#endif
 }
 
 
@@ -599,6 +639,7 @@ static void Task_CarStop(void)
     /* 里程编号与段内里程也要归零：下次启动必须从「第一个要甩的弯」重新数。  2026-11-21 */
     Corner_Index         = 0;//清空弯道序号,下次从直角开始
     Corner_SegMileage    = 0.0f;//清空上个弯道结束到现在走过的路程
+    Finish_Armed         = 0;//清空终点兜底标志,下次跑重新等最后一个弯
     Turn_TargetAngle_Deg = TURN_TARGET_ANGLE_DEG;//恢复保守角度,下次被查表值覆盖
 }
 
