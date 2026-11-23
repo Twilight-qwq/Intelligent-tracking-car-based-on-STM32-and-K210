@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """live_scan_test.py v3 —— 现场扫线记录（320x240，9 行，单文件）。
 
 粘进 MaixPy IDE 直接跑。要改的只有下面 GROUP_NAME 那一行。
@@ -1111,6 +1111,7 @@ print("")
 # 现场只有一个人：推车的时候没法看屏幕，更没法拍视频。
 # 让板子自己把每一行写进存储卡，跑完把卡取出来在电脑上看，一行都不丢。
 RECORD_TO_FILE = True
+RECORD_FLUSH_EVERY = 10     # 写满这么多行才真落盘一次（原来每行都 flush，卡慢会拖主循环）
 RECORD_FILE_NAME = "run_log.txt"
 
 record_fh = None
@@ -1131,13 +1132,22 @@ if RECORD_TO_FILE:
         print("记录：没有可写的存储卡，只能看屏幕 —— 跑完别让它滚走。")
 
 
+record_pending = 0          # 还没落盘的行数
+
+
 def record(line):
-    """把一行写进文件。写失败不影响主循环。"""
+    """把一行写进文件。写失败不影响主循环。
+    每写 RECORD_FLUSH_EVERY 行才 flush 一次：卡慢时不至于每行都顿一下。
+    代价：万一突然断电，最多丢最后 9 行。"""
+    global record_pending
     if record_fh is None:
         return
     try:
         record_fh.write(line + "\n")
-        record_fh.flush()
+        record_pending += 1
+        if record_pending >= RECORD_FLUSH_EVERY:
+            record_fh.flush()
+            record_pending = 0
     except Exception:
         pass
 

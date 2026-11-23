@@ -192,10 +192,7 @@ void App_Init(void)
 	Key_Init();
 	// 台架标定模式:上电瞬间按住开关不放就进标定
 	// (按键接在 PA0, 上拉输入, 按下 = 低电平; 具体引脚见 Key.c)
-	if (Key_IsDown())//按住按钮上电:进台架标定模式
-	{
-		Calib_Mode = 1;
-	}
+	if (Key_IsDown()) Calib_Mode = 1;//按住按钮上电:进台架标定模式
 	Voice_Init();
 	BlueTooth_Init();
 	Debug_Init();
@@ -751,6 +748,15 @@ static void Task_SendTelemetry(void)
 
 
 // 5. 获取视觉数据与丢包保护(30ms)
+/* 视觉断多久算「真断了」，超了就停车。
+ * 正常跑：连续 11 次没帧 = 330ms。
+ * 转弯中：连续 34 次 = 1020ms —— 转弯是编码器 + 陀螺仪在管，本来就不看视觉，
+ *   而弯里 47.5% 的帧好行=0（视觉常哑火）。为了哑火几帧就把车停在弯中间，
+ *   既跑不完又危险。转完这个弯立刻收回 330ms。
+ * 注意：计数在转弯期间照常累加，所以转完如果视觉还是断的，下一拍就按 330ms 停。 */
+#define VISION_LOST_TICKS_RUN    10     /* >10 → 连续 11 次没帧 → 330ms  */
+#define VISION_LOST_TICKS_TURN   33     /* >33 → 连续 34 次没帧 → 1020ms */
+
 static uint8_t Task_FetchVisionData(VisionData_t *vis_data)
 {
     static uint8_t lostdata_time = 0; 
@@ -768,11 +774,15 @@ static uint8_t Task_FetchVisionData(VisionData_t *vis_data)
             lostdata_time = 0;
             return 0;
         }
-        if(lostdata_time > 10)//11次*30ms=330ms。原来>3(120ms),视觉一帧就100ms,余量不够会误停(2026-11-20改)
+        /* 转弯期间用放宽的门槛（1020ms），其余时候 330ms。 */
         {
-            CarRun_State = 0;//防止摄像头出问题了小车还在跑
-            Motor_SetDuty(0,0);
-            lostdata_time = 0;
+            uint8_t limit = (Corner_Active != 0) ? VISION_LOST_TICKS_TURN : VISION_LOST_TICKS_RUN;
+            if(lostdata_time > limit)
+            {
+                CarRun_State = 0;//防止摄像头出问题了小车还在跑
+                Motor_SetDuty(0,0);
+                lostdata_time = 0;
+            }
         }
         return 0; // 没拿到
     }
