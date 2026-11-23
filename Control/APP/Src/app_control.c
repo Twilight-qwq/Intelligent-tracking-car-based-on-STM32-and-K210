@@ -503,8 +503,11 @@ static uint8_t Task_CornerDecide(uint8_t state)
 	 * 表现为 I6 − I5 ≈ 0，等于 TURN_ARM_CM 那个「提前量」白设了。
 	 * 修法：报弯这一刻必须从零开始数。 */
 	Corner_ArmDist    = 0.0f;
-	Corner_SetTarget(CORNER_T_ARM);
-	return 1;
+	/* 2026-11-23 深夜再改（用户报「弯道前歪头然后转弯」）：
+	 * 原来这里是 Corner_SetTarget(CORNER_T_ARM); return 1; —— 目标直接写 15/15 并接管，
+	 * 等于接下来 16 厘米里方向环完全不管，车头有一点歪就会一直歪到弯口。
+	 * 现在 return 0：把这一拍让给方向环去算（速度在 Task_30ms_Control 里被压到 15 档）。 */
+	return 0;
 }
 
 
@@ -1127,6 +1130,17 @@ static void Task_30ms_Control(VisionData_t *vis_data)
         Motor_SetDuty(0, 0);
         CarRun_State = 0;
         return;
+    }
+
+    /* 报弯之后「等那 16 厘米」这段时间：速度压到 15 档，但方向仍然交给方向环。
+     * 2026-11-23 深夜改（用户报「弯道前歪头然后转弯」）：
+     *   原来 Task_CornerDecide 在报弯后直接把目标写成 15/15 并 return 1，
+     *   等于这 16 厘米（15 档 42 厘米/秒 → 约 0.38 秒）方向环完全不管 ——
+     *   车进入这段时只要车头有一点歪，就会一直歪着走到弯口，看起来就是「弯道前歪头」。
+     *   现在改成：速度照样降到 15 档，但方向由方向环负责，弯道前也能贴着线走。 */
+    if (Corner_Armed && (base_speed > TURN_ARM_SPEED))
+    {
+        base_speed = TURN_ARM_SPEED;
     }
 
     /* 差速上限：恢复到「最多等于基础速度」（pid_l.output_max 已经是 Speed_Straight）。
