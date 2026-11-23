@@ -47,6 +47,7 @@ static void Corner_SetTarget(uint8_t kind);
 static uint8_t Task_CornerDecide(uint8_t state);
 static uint8_t Corner_TurnAngleReached(void);
 static uint8_t Task_5ms_FinishStep(void);
+static uint8_t Task_5ms_StallGuard(uint32_t curr_ms);
 
 static uint32_t task_last_5ms = 0;//5ms时间片
 static uint32_t task_last_10ms = 0;//10ms时间片
@@ -161,6 +162,21 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
  * 假数没了，就不必再压方向环 —— 回到 11-20 在直道上调定的那一版：
  *   Kp 0.231 / Kd 0.53，D 项按帧限幅 8 像素（见 MID/Src/mid_pid.c 的 LIMIT_LINE_DIFF_MAX）。 */
 
+/* ===== 堵转保护参数（2026-11-23 夜新增，判据见 Task_5ms_StallGuard） ======
+ * 背景：TB6612 绝对最大 3.2A(峰值)/1.2A(连续)，而 12.6V 加在堵转的绕组上是 6~12A。
+ *   实测抓包 lap_new_01 里有三段「目标 20、实际 0」（1.4 / 5.5 / 5.2 秒），程序毫无反应。 */
+#define STALL_TARGET_MIN    15.0f   /* 有轮子被要求跑到这么多以上才管（单位：计数/5ms） */
+#define STALL_SPEED_MAX     1.5f    /* 两轮平均低于这么多算「不走」（1.5×0.01402÷0.005 = 4.2 厘米/秒） */
+#define STALL_DUTY_MIN      999.0f  /* 速度环输出（‰）正向顶到这么多算「还在死推」 */
+#define STALL_CONFIRM_MS    400     /* 连续这么多毫秒都符合才算真堵转 */
+#define STALL_GRACE_MS      500     /* 每次启动后这么久之内不检测（挡起步误杀） */
+
+static uint32_t Stall_Tick     = 0;    /* 这一轮「疑似堵转」是从什么时候开始的 */
+static uint8_t  Stall_Running  = 0;    /* 1=上一拍已经在「疑似堵转」里，正在计时 */
+static uint32_t Stall_RunStart = 0;    /* 这一趟是什么时候开始跑的，宽限期用 */
+static uint8_t  Stall_RunPrev  = 0;    /* 上一拍的启停状态，用来抓 0→1 那个边沿 */
+static uint8_t  Stall_CutTimes = 0;    /* 断过几次（调试器里能看，台架上用得到） */
+
 static uint8_t  Corner_Armed  = 0;    // 1=视觉已经报弯,正在等里程
 static uint8_t  Corner_Active = 0;    // 1=正在按固定差速转弯
 static uint8_t  Corner_Done   = 0;    // 1=这个弯已经转够90度,别再转
@@ -267,6 +283,13 @@ void AppTask_5ms(uint32_t curr_ms)//内环速度环控制
 
 	/* 台架标定模式：只数轮子、不驱动电机。返回 1 说明这一拍别跑车。 */
 	if(Task_EncoderCalib()) return;
+
+	/* 堵转保护：车被顶住/卡住时断电停车，别把驱动烧掉。（详见 Task_5ms_StallGuard）
+	 * 为什么放在这个位置，是两个取舍：
+	 *   1) 必须在 if(CarRun_State == 0) return 之前 —— 它靠这一行抓「0→1 刚启动」那个边沿；
+	 *   2) 它读的是【上一拍】的速度环输出（5 毫秒前的值，够快）。换来的是断电动手在
+	 *      这一拍算 PWM 之前，不会被下面的 Motor_SetDuty 覆盖掉。 */
+	if(Task_5ms_StallGuard(curr_ms)) return;
 
 	if(CarRun_State == 0) return;//停车模式不启动
 
@@ -564,6 +587,96 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 			Corner_SetTarget(CORNER_T_TURN);
 		}
 	}
+}
+
+
+/* ===== 堵转保护：车被顶住 / 卡住时，别让速度环把占空比一直推到 100% ====（2026-11-23 夜新增）
+ *
+ * 为什么要它：TB6612 的绝对最大电流只有 3.2A（峰值）/ 1.2A（连续），
+ *   而 12.6V 直接加在堵转的电机绕组上，电流是 6~12A —— 差一个数量级以上。
+ *   实测抓包（_field_shots/lap_new_01.bin）里有三段这个状态：1.4 / 5.5 / 5.2 秒，
+ *   目标一直是 20，两个轮子的实际速度一直是 0，程序没有任何反应。
+ *   （这件事和"停车抱死烧管子"是两码事：抱死一次只有 0.1 焦耳量级，可以忽略。）
+ *
+ * 判据：下面四条同时成立才算，缺一条都不算
+ *   1) 有轮子被要求跑到 15 以上                 —— 慢速挪车时不判
+ *   2) 两轮【平均】速度 < 1.5 个计数/5ms        —— 1.5 × 0.01402 ÷ 0.005 = 4.2 厘米/秒
+ *   3) 两个速度环的输出都【正向】顶到 999‰ 以上  —— 「还在往前死推」才叫堵转
+ *      为什么必须判正向：转弯时内侧轮的目标只有 3.45，实际被车身拖着跑 4~6，
+ *      误差是负的 → 内侧环会饱和到 −1000。若用绝对值判，这条就形同虚设。
+ *   4) 连续满足 400 毫秒                        —— 中途好一拍就重新计时
+ * 另外：每次启动后 500 毫秒内不检测。起步时轮子本来就还没转起来，那是正常现象，
+ *   这时候速度环同样是满占空比 —— 所以「饱和」这一条挡不住起步，挡起步的是宽限期。
+ *
+ * 已知盲区（故意不处理）：只堵一个轮子（一侧 0、一侧正常转）时两轮平均仍 > 1.5，抓不到。
+ *   要抓它得单独判单轮，而转弯内侧轮本来就贴着 0 走，误判风险大于收益。
+ *
+ * 返回值：1 = 这一拍已经断电停车了，调用者必须马上 return（不然占空比会被后面覆盖）。
+ */
+static uint8_t Task_5ms_StallGuard(uint32_t curr_ms)
+{
+	/* 1. 抓「开始跑」的那一刻，用来做启动宽限。CarRun_State 只有 0 / 1 两种值 */
+	if (CarRun_State != Stall_RunPrev)
+	{
+		Stall_RunPrev = CarRun_State;
+		if (CarRun_State != 0)              /* 0 → 1：刚按了启动 */
+		{
+			Stall_RunStart = curr_ms;       /* 宽限期从这里往后数 */
+			Stall_Running  = 0;             /* 计时清零 */
+		}
+	}
+	if (CarRun_State == 0) return 0;        /* 已经停着，不用管 */
+
+	/* 2. 启动宽限期：起步这几百毫秒轮子还没转起来是正常的 */
+	if ((curr_ms - Stall_RunStart) < STALL_GRACE_MS)
+	{
+		Stall_Running = 0;
+		return 0;
+	}
+
+	/* 3. 三条数据判据一起看 */
+	{
+		float avg_speed = (actual_left + actual_right) * 0.5f;   /* 两轮平均（计数/5ms） */
+		float cmd_speed = (target_left > target_right)
+		                  ? target_left : target_right;          /* 要求高的那个轮子的目标 */
+		uint8_t suspect = 0;
+
+		if (cmd_speed >= STALL_TARGET_MIN)                        /* 条件1：确实要求它快跑 */
+		{
+			if ((avg_speed <  STALL_SPEED_MAX) &&
+			    (avg_speed > -STALL_SPEED_MAX))                   /* 条件2：轮子几乎不走 */
+			{
+				if ((pid_v_left.output  >= STALL_DUTY_MIN) &&
+				    (pid_v_right.output >= STALL_DUTY_MIN))       /* 条件3：两个环都在正向死推 */
+				{
+					suspect = 1;
+				}
+			}
+		}
+
+		/* 4. 连续够久才动手（条件4） */
+		if (suspect)
+		{
+			if (Stall_Running == 0)             /* 刚进「疑似」 */
+			{
+				Stall_Running = 1;
+				Stall_Tick    = curr_ms;
+			}
+			else if ((curr_ms - Stall_Tick) >= STALL_CONFIRM_MS)
+			{
+				Stall_Running = 0;
+				Stall_CutTimes++;               /* 调试用：一共断过几次 */
+				CarRun_State = 0;               /* 进停车状态(100ms 任务会做安全清理、清积分) */
+				Motor_SetDuty(0, 0);            /* 立刻断输出，不等那 100 毫秒 */
+				return 1;
+			}
+		}
+		else
+		{
+			Stall_Running = 0;                  /* 中间只要好一拍，就重新计时 */
+		}
+	}
+	return 0;
 }
 
 
