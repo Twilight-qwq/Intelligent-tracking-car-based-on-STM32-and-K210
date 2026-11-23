@@ -153,15 +153,13 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
 
 /* 偏差限幅(像素)。（详见 Doc/代码说明.md §10） */
 #define LIMIT_LINE_ERR_MAX 30.0f
-/* 2026-11-23 新增两条限幅，治「拐出弯时车身偏一边，方向环反过来把车拧过头」：
- * 1) P 项饱和：偏差超过 10 像素就按 10 算。
- *    为什么：实测拐出弯偏差到 −24，P 项 0.231×24 = 5.5，加上 D 项 4.2 一共 9.7，
- *    在 25 档上相当于 39% 差速 = 185°/秒，0.3 秒就多拧 55° —— 看着像掉头。
- *    饱和以后大偏差只要求「转回来」，不要求「猛打」。
- * 2) 差速上限：从「最多等于基础速度」压到 35% 基础速度。
- *    为什么：原来一个轮子能停转，那是原地掉头级别的动作，循迹用不上。 */
-#define LIMIT_P_ERR_MAX    10.0f
-#define TURN_RATIO_MAX     0.35f
+/* 2026-11-23 夜：把前一天加的两条限幅（LIMIT_P_ERR_MAX = 10、TURN_RATIO_MAX = 0.35）全撤了。
+ * 为什么撤：它们当初是给「拐出弯时的假偏差」打的补丁。那 ±26 并不是车真的偏了 12 厘米，
+ *   而是 K210 拿「一条线 + 车道半宽」倒推出来的（run_log.txt 实测，见 fig120 / fig121）。
+ * 补丁的副作用：真偏 5 厘米以上时方向环也打不动（偏差 10 像素就饱和），车一路贴着内侧线。
+ * 现在改成从源头治：K210 只让「两条线都在」的行参与偏差（VisualTest/live_scan_test.py）。
+ * 假数没了，就不必再压方向环 —— 回到 11-20 在直道上调定的那一版：
+ *   Kp 0.231 / Kd 0.53，D 项按帧限幅 8 像素（见 MID/Src/mid_pid.c 的 LIMIT_LINE_DIFF_MAX）。 */
 
 static uint8_t  Corner_Armed  = 0;    // 1=视觉已经报弯,正在等里程
 static uint8_t  Corner_Active = 0;    // 1=正在按固定差速转弯
@@ -917,10 +915,6 @@ static void Task_30ms_Control(VisionData_t *vis_data)
     {
         error = 0.0f;
     }
-    /* P 项饱和（2026-11-23 新增）：偏差再大也只按 10 像素算。
-     * 拐出弯时偏差能到 −24，不饱和的话 P 项一个人就给出 5.5 的差速。 */
-    if(error >  LIMIT_P_ERR_MAX) error =  LIMIT_P_ERR_MAX;
-    if(error < -LIMIT_P_ERR_MAX) error = -LIMIT_P_ERR_MAX;
 
     float turn = PID_L_Calc(&pid_l,error,raw_error);//差速大小(P用error，D用raw_error)
     float base_speed = Speed_Straight;
@@ -939,14 +933,9 @@ static void Task_30ms_Control(VisionData_t *vis_data)
         return;
     }
 
-    /* 差速上限（2026-11-23 改）：原来是 ±base_speed（等于让一个轮子停转），
-     * 那是原地掉头级别的动作，循迹用不上。压到 35% 之后：
-     * 20 档最多差 7、25 档最多差 8.75、15 档最多差 5.25，对应约 100°/秒的上限。 */
-    {
-        float turn_max = base_speed * TURN_RATIO_MAX;
-        if (turn >  turn_max) turn =  turn_max;
-        if (turn < -turn_max) turn = -turn_max;
-    }
+    /* 差速上限：恢复到「最多等于基础速度」（pid_l.output_max 已经是 Speed_Straight）。
+     * 2026-11-23 白天曾压到 35%，配合 P 项饱和一起治假偏差；假偏差的源头已在 K210 那边堵住，
+     * 这里就不再额外压 —— 真偏 12 厘米时需要 40% 左右的差速才拉得回来。 */
     target_left = base_speed + turn;
     target_right = base_speed - turn;
 }

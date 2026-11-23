@@ -828,8 +828,18 @@ def scan_frame(image):
 
         if info[0] < 0:
             continue                                # 这行没算出中心
+        found_row_count += 1                        # 算出了中心就算找到（含单线倒推的）
+        # 【2026-11-23 夜】只有「两条线都在」的行，才准往偏差里投票。
+        # 为什么：只剩一条线时，中心是拿「车道半宽」倒推出来的
+        # （中心列 = 那条线 ± 半宽）。直道上这个倒推是对的；弯里车道是拐的，
+        # 同一条线倒推出来的中心能偏 ±30 刻度（run_log.txt 实测，见 fig120）。
+        # 车一出弯就被这个假偏差拽一下，看着就是画龙。
+        # 代价：弯里可能只剩 1~3 行在算，甚至一帧都算不出 ——
+        # 那种帧 raw_error 直接等于 0（下面 near_weight_sum == 0 那一行），
+        # 也就是「看不全就别乱打方向」，比拿推算值硬打安全。
+        if info[1] != 0:
+            continue
         column_error = info[0] - CENTER_COLUMN
-        found_row_count += 1
         if row_index < NEAR_ROW_COUNT:
             weight = NEAR_WEIGHT[row_index]
             near_sum += weight * column_error
