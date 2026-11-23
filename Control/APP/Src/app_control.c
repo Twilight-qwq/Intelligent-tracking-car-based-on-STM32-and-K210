@@ -1,4 +1,4 @@
-#include <stdint.h>
+﻿#include <stdint.h>
 #include <stdlib.h>
 #include <math.h>
 #include "app_control.h"
@@ -489,6 +489,13 @@ static uint8_t Task_CornerDecide(uint8_t state)
 
 	Corner_Armed      = 1;
 	Corner_ArmMileage = Corner_SegMileage;         /* 调试：记下报弯那一刻的里程 */
+	/* 2026-11-23 夜修（用户截图发现：报弯里程 165.8、实际 166.7，只差 0.9 厘米）：
+	 * Corner_ArmDist 是「报弯之后已经走了多少厘米」，原来只在「视觉连续说不是弯」那条
+	 * 分支里清零，报弯这一刻【没有】清零。于是只要上一个弯之后视觉没松口（一直报 2），
+	 * 残留的十几厘米还在里面，下一次报弯当场就够 16 厘米 → 立刻开转，
+	 * 表现为 I6 − I5 ≈ 0，等于 TURN_ARM_CM 那个「提前量」白设了。
+	 * 修法：报弯这一刻必须从零开始数。 */
+	Corner_ArmDist    = 0.0f;
 	Corner_SetTarget(CORNER_T_ARM);
 	return 1;
 }
@@ -551,6 +558,11 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 			/* 这个弯过完了：段内里程清零、编号往后挪一个。   2026-11-21 新增
 			 * 这两行是「误差不跨段累积」的关键：下一段的阈值永远从这一刻重新算。 */
 			Corner_SegMileage = 0.0f;
+
+			/* 「报弯后已走距离」也一起清零（2026-11-23 夜加）：它和段内里程是一对，
+			 * 段内里程清零了它不清，就会把这次的十几厘米带进下一个弯，
+			 * 让下一次报弯当场就够 16 厘米、来不及等（见 Task_CornerDecide 里报弯那段）。 */
+			Corner_ArmDist = 0.0f;
 
 			/* 终点兜底：先判断「刚转完的这个弯是不是最后一个」，再决定编号加不加。
 			 * 2026-11-23 修 off-by-one：顺序一反就出事 —— 自增之后再判，
