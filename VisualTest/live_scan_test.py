@@ -882,11 +882,12 @@ def scan_frame(image):
                 last_error if LOST_USE_LAST_ERROR else 0,
                 NOTE_LOST_BLIND, pattern)
     lost_frame_count = 0
-    # 扫描窗口的基准只在「这一帧偏差算得住」时才更新。
-    # 以前无条件更新，算不住时 raw_error = 0 → 窗口被拉回画面正中，
-    # 下一帧远处那几行就找不到线，越滚越偏。（2026-11-23 深夜）
-    if near_pair_count >= PAIR_MIN_NEAR:
-        last_center = CENTER_COLUMN + raw_error    # 给下一帧的扫描窗口当基准
+    # 扫描窗口的基准每帧都要更新 —— 2026-11-24 凌晨改回来。
+    # 昨晚曾加过「只在近处算得住时才更新」，怕算不准的时候窗口被带歪；
+    # 但反过来的风险更大：万一某一帧 raw_error 算飞了（比如 +100），
+    # last_center 会被锁在那个偏心的位置，之后每行都只扫半边，越扫越瞎。
+    # 保留原来的写法（每帧更新）更安全，算不准的那一帧由「沿用上次偏差」去挡。
+    last_center = CENTER_COLUMN + raw_error
 
     # ---- 以下按 judge.py 的规则算"实际会发出什么"，全部在 320 尺度里算 ----
     error = int((raw_error - ERROR_CALIBRATION_PX * SCALE) * ERROR_GAIN)
