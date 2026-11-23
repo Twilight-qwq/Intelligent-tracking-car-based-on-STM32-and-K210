@@ -1,4 +1,4 @@
-#include "stm32f10x.h"
+﻿#include "stm32f10x.h"
 #include "mid_delay.h"
 #include "bsp_gyro.h"
 
@@ -99,6 +99,14 @@
 
 /* 200 × 5 毫秒 = 1 秒，要求这 1 秒车是静止的 */
 #define GYRO_ZERO_BIAS_SAMPLE_TARGET        200
+/* 零偏采样期间，最大值和最小值差超过这么多，就认为车被人动过，这一批作废重采。
+ * 为什么需要：零偏要求车静止，而 Gyro_Update() 在停车状态也照跑。
+ *   上电后 1.2 秒内摆车、对线，那些真实转动会被平均进零偏；
+ *   零偏一偏，之后每帧都减错 —— 偏大就转过量（最坏转到 800ms 超时 ≈190 度）。
+ * 300 个数字 ≈ 4.6 度/秒，静止时的噪声只有几个数字，手转一下是几千，很好区分。 */
+#define GYRO_BIAS_MAX_SPREAD                300
+/* 最多重采几次。不加这个上限的话，人一直晃车就永远采不完零偏。 */
+#define GYRO_BIAS_MAX_RESTART               3
 
 /* ==================== 本模块状态 ==================== */
 
@@ -128,9 +136,15 @@ static uint16_t Gyro_ReadErrorCount        = 0;      /* I2C 读失败的总次�
 static uint32_t Gyro_LastUpdateMs          = 0;      /* 上次调用 Gyro_Update 的时刻 */
 static uint8_t  Gyro_DtReady               = 0;      /* 1 = 已经记过时刻，可以算真实间隔了 */
 static uint16_t Gyro_ConsecutiveFailCount  = 0;      /* 连续读失败次数，成功一次就清零 */
+static int16_t  Gyro_BiasSampleMin         = 0;      /* 采零偏期间，这一批样本的最小值 */
+static int16_t  Gyro_BiasSampleMax         = 0;      /* 采零偏期间，这一批样本的最大值 */
+static uint8_t  Gyro_BiasRestartCount      = 0;      /* 已经因为「车在动」重采了几次 */
 
-/* 连续失败这么多次（10 × 5 毫秒 = 50 毫秒）就试着救一次总线 */
-#define GYRO_RECOVERY_AFTER_FAILS           10
+/* 连续失败这么多次（3 × 5 毫秒 = 15 毫秒）就试着救一次总线。
+ * 原来是 10 次（50 毫秒）：这 50 毫秒里每次读失败都直接 return，角度完全不积分，
+ * 转弯中撞上一次就是 240 度/秒 × 0.05 秒 ≈ 12 度没了。
+ * 降到 3 次只损失约 3.6 度。救总线本身很便宜：SDA 是高电平（正常总线）就直接返回。 */
+#define GYRO_RECOVERY_AFTER_FAILS           3
 
 /* ==================== 软件 I2C 的引脚操作 ==================== */
 
@@ -537,6 +551,30 @@ void Gyro_Update(uint32_t current_ms)
 		if (Gyro_BiasSkipCount > 0)
 		{
 			Gyro_BiasSkipCount--;
+			return;
+		}
+
+		/* 先记这一批的极值，好判断车是不是在动 */
+		if (Gyro_ZeroBiasSampleCount == 0)
+		{
+			Gyro_BiasSampleMin = axis_z_raw;
+			Gyro_BiasSampleMax = axis_z_raw;
+		}
+		else
+		{
+			if (axis_z_raw < Gyro_BiasSampleMin) Gyro_BiasSampleMin = axis_z_raw;
+			if (axis_z_raw > Gyro_BiasSampleMax) Gyro_BiasSampleMax = axis_z_raw;
+		}
+
+		/* 极差太大 = 车被动过，这一批作废，从头再采（最多重采 GYRO_BIAS_MAX_RESTART 次）*/
+		if ((Gyro_BiasRestartCount < GYRO_BIAS_MAX_RESTART) &&
+		    (((int32_t)Gyro_BiasSampleMax - (int32_t)Gyro_BiasSampleMin) > GYRO_BIAS_MAX_SPREAD))
+		{
+			Gyro_BiasRestartCount++;
+			Gyro_ZeroBiasSum         = 0.0f;
+			Gyro_ZeroBiasSampleCount = 0;
+			Gyro_BiasSampleMin       = axis_z_raw;
+			Gyro_BiasSampleMax       = axis_z_raw;
 			return;
 		}
 
