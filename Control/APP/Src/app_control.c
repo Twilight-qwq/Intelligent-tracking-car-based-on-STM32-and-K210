@@ -104,8 +104,11 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
  *   要单独修就改那个弯的阈值（调小 3~4 厘米），不用动这里。 */
 #define TURN_FORCE_CM           (-10.7f)
 
-/* 第二道闸（2026-11-21 新增）：编码器累计超过这个数也停。（详见 Doc/代码说明.md §5） */
-#define TURN_COUNT_BACKSTOP     2400.0f
+/* 第二道闸（2026-11-21 新增）：编码器兜底。原来是写死 2400 计数（= 125°，会让车转过头 35°），
+ * 2026-11-23 深夜改成「按本次目标角度实时算 + 这个余量」：
+ *   90° 弯 → 1730 × 1.05 ≈ 1817 计数；103° 弯 → 1980 × 1.05 ≈ 2080 计数。
+ * 多留 5% 是因为编码器估算受打滑影响，宁可多一点点也不要提前停。 */
+#define TURN_COUNT_BACKSTOP_RATIO  1.05f
 
 /* ===== 弯道速度表（2026-11-21）=====
  * 直道 30 档，一看到弯就降到 15（用视觉报弯到弯口那 20 厘米当刹车距离），
@@ -117,7 +120,7 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
   /* 2026-11-23 启用「钝角弯也当弯道」后，这张表真正生效。第一项从 200 改成 180：
    * 三条实车数据都指向第一个弯心在 180（报弯 151~154、开转 170.6~171.7 都吻合）。
    * 后四项还是几何值：四段 110 / 240 / 240 / 110（按弯心到弯心），等实测替换。 */
-  static const float Turn_ThresholdCm[TURN_TABLE_SIZE] = { 160.0f, 110.0f, 240.0f, 240.0f, 110.0f };
+  static const float Turn_ThresholdCm[TURN_TABLE_SIZE] = { 180.0f, 110.0f, 240.0f, 240.0f, 110.0f };
   static const float Turn_AngleDeg[TURN_TABLE_SIZE]     = {  90.0f,  38.5f, 103.0f,  38.5f,  90.0f };
 #else
   #define TURN_TABLE_SIZE 3
@@ -506,10 +509,20 @@ static uint8_t Task_CornerDecide(uint8_t state)
 static uint8_t Corner_TurnAngleReached(void)
 {
 	/* 第二道闸：编码器计数。陀螺仪半路坏了、角度不涨时，靠这个兜底。
-	 * 正常转弯（包括 103 度）都到不了 2400，所以平时不会误触发。 */
-	if (Corner_Accum >= TURN_COUNT_BACKSTOP)
+	 * 2026-11-23 深夜改（抓包抓出来的）：原来是写死的 2400 计数，而 TURN_DIFF_TARGET = 1730
+	 *   才对应 90° —— 2400 等于 **125°**。也就是说陀螺仪一旦不涨，车会转过头 35°，
+	 *   实测就是这个：两次转弯都转了约 0.6 秒（2400 ÷ 21 计数每拍 ≈ 0.57 秒），
+	 *   陀螺仪读数全程只有 1~2°，车却转出 126°、140°。
+	 * 现在按本次目标角度实时算：90° 弯 = 1730×1.05 ≈ 1817，103° 弯 = 1980×1.05 ≈ 2080。
+	 *   多留 5% 是因为编码器估算会受打滑影响，宁可多一点点也不要提前停。 */
 	{
-		return 1;
+		float count_backstop = TURN_DIFF_TARGET
+		                       * (Turn_TargetAngle_Deg / 90.0f)
+		                       * TURN_COUNT_BACKSTOP_RATIO;
+		if (Corner_Accum >= count_backstop)
+		{
+			return 1;
+		}
 	}
 
 #if TURN_USE_GYRO_ANGLE
