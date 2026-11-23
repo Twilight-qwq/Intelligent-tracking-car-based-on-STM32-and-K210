@@ -480,16 +480,21 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 			/* 这个弯过完了：段内里程清零、编号往后挪一个。   2026-11-21 新增
 			 * 这两行是「误差不跨段累积」的关键：下一段的阈值永远从这一刻重新算。 */
 			Corner_SegMileage = 0.0f;
-			if (Corner_Index + 1 < TURN_TABLE_SIZE)
-			{
-				Corner_Index++;
-			}
 
-			/* 最后一个弯也转完了 → 从这一刻开始数「离终点还有多远」（终点兜底）。
-			 * 放在清零之后：停车里程就是从这一刻重新数的，只数 94 厘米，误差小。 */
+			/* 终点兜底：先判断「刚转完的这个弯是不是最后一个」，再决定编号加不加。
+			 * 2026-11-23 修 off-by-one：顺序一反就出事 —— 自增之后再判，
+			 * 第 2 个弯转完时编号已经变成 2（最后一格），会误判成「最后一个也转完了」，
+			 * 车就在第 3 个弯前面 99 厘米停住、少转一个弯。
+			 * 正确轨迹（3 个弯，TURN_TABLE_SIZE=3）：弯1 编号 0 → 否 → 变 1；
+			 * 弯2 编号 1 → 否 → 变 2；弯3 编号 2 → 是 → 置位，编号不动。 */
 			if (Corner_Index + 1 >= TURN_TABLE_SIZE)
 			{
 				Finish_Armed = 1;
+			}
+
+			if (Corner_Index + 1 < TURN_TABLE_SIZE)
+			{
+				Corner_Index++;
 			}
 
 			/* 立刻改成出弯速度（走统一入口 Corner_SetTarget，不再各写各的） */
