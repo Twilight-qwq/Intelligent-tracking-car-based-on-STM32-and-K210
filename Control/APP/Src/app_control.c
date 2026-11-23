@@ -118,7 +118,7 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
   /* 2026-11-23 启用「钝角弯也当弯道」后，这张表真正生效。第一项从 200 改成 180：
    * 三条实车数据都指向第一个弯心在 180（报弯 151~154、开转 170.6~171.7 都吻合）。
    * 后四项还是几何值：四段 110 / 240 / 240 / 110（按弯心到弯心），等实测替换。 */
-  static const float Turn_ThresholdCm[TURN_TABLE_SIZE] = { 180.0f, 110.0f, 240.0f, 240.0f, 110.0f };
+  static const float Turn_ThresholdCm[TURN_TABLE_SIZE] = { 160.0f, 110.0f, 240.0f, 240.0f, 110.0f };
   static const float Turn_AngleDeg[TURN_TABLE_SIZE]     = {  90.0f,  38.5f, 103.0f,  38.5f,  90.0f };
 #else
   #define TURN_TABLE_SIZE 3
@@ -963,7 +963,16 @@ static void Task_SendTelemetry(void)
     data.target_left  = target_left;
     data.actual_left  = actual_left;
     data.target_right = target_right;
-    data.actual_right = actual_right;
+    /* I3 从 2026-11-23 夜起改发【陀螺仪累计转角（度）】，不再发右轮实际速度。
+     * 为什么：调转弯时最需要知道「陀螺仪读到多少度才停」——
+     *   命令 90° 却转了 140°，到底是①陀螺仪读得偏小（读到 90 时车已转 140）、
+     *   ②正常停在 90、多出来的角度是方向环拧的、还是③压根没按角度停（超时兜底），
+     *   看这个通道一眼就能分开，不用录像也不用猜。
+     * 读法：转弯开始时它被清零，从 0 往上涨；转完还要不要它停，全看这个数。
+     * 陀螺仪没工作时故意发 −999 —— 屏幕上一看到 −999 就是陀螺仪坏了/没插好，
+     *   此时转弯走的是编码器兜底（TURN_DIFF_TARGET = 1730 计数），不可信。
+     * 想看右轮实际速度就把下面这一行换回 actual_right。 */
+    data.actual_right = Gyro_IsOk() ? Gyro_GetTotalAngle() : -999.0f;
     data.error        = last_vision_error;
     data.mileage_arm  = Corner_ArmMileage;
     data.mileage_turn = Corner_TurnStartMileage;
