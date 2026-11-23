@@ -494,7 +494,14 @@ NOTE_SLOW = 5            # 降到最慢档了，但还没到打方向的门槛 �
 last_error = 0          # 上一帧实际发出去的误差（160 尺度），丢线时要用
 last_state = 0
 lost_frame_count = 0
+hold_frame_count = 0    # 「近处看不全、正在沿用上次偏差」连续了多少帧（2026-11-23 深夜加）
 last_center = CENTER_COLUMN   # 上一帧算出的车道中心列，给下一帧当扫描窗口的基准
+
+# 近 4 行里至少要有这么多行「两条线都在」，这一帧的偏差才算数（2026-11-23 深夜加）
+# 为什么不是 1：只剩 1 行时，那个中心是从"一条线 ± 半宽"倒推的，弯里能偏 ±30 刻度，
+#   实测就是它把车拽出弯道的（见 fig120）。
+# 为什么不是 4：弯里常常只有 2~3 行能配对，要求 4 行等于弯里全程瞎。
+PAIR_MIN_NEAR = 2
 
 
 def to_sent_scale(value):
@@ -782,6 +789,7 @@ def scan_frame(image):
     far_weight_sum = 0
     found_row_count = 0
     far_found_row_count = 0
+    near_pair_count = 0                         # 近 4 行里「两条线都在」的行数
     corner_signal = 0
     corner_row = -1
 
@@ -841,6 +849,7 @@ def scan_frame(image):
             continue
         column_error = info[0] - CENTER_COLUMN
         if row_index < NEAR_ROW_COUNT:
+            near_pair_count += 1                    # 近处这一行是「两条线都在」，算它一票
             weight = NEAR_WEIGHT[row_index]
             near_sum += weight * column_error
             near_weight_sum += weight
@@ -870,7 +879,11 @@ def scan_frame(image):
                 last_error if LOST_USE_LAST_ERROR else 0,
                 NOTE_LOST_BLIND, pattern)
     lost_frame_count = 0
-    last_center = CENTER_COLUMN + raw_error    # 给下一帧的扫描窗口当基准
+    # 扫描窗口的基准只在「这一帧偏差算得住」时才更新。
+    # 以前无条件更新，算不住时 raw_error = 0 → 窗口被拉回画面正中，
+    # 下一帧远处那几行就找不到线，越滚越偏。（2026-11-23 深夜）
+    if near_pair_count >= PAIR_MIN_NEAR:
+        last_center = CENTER_COLUMN + raw_error    # 给下一帧的扫描窗口当基准
 
     # ---- 以下按 judge.py 的规则算"实际会发出什么"，全部在 320 尺度里算 ----
     error = int((raw_error - ERROR_CALIBRATION_PX * SCALE) * ERROR_GAIN)
@@ -897,6 +910,23 @@ def scan_frame(image):
             car_state = 1                           # 远处的路看不见了 = 前面到头了
         if is_corner_turn:
             car_state = 2
+
+    # ---- 看不全就【沿用上次的偏差】，不要给 0（2026-11-23 深夜加）----
+    # 为什么：近处没有 2 行「两条线都在」时，偏差只有两种下场 ——
+    #   ① 拿一条线倒推 → 假偏差（能差 ±30，车被拽出去）
+    #   ② 干脆给 0 → 等于告诉方向环「你在正中间」→ 它不打方向，车自己漂
+    # 实测（lap_new_04.bin）：7.0~8.3 秒目标一直是 15/15、偏差一直是 0，
+    #   车就那样歪着跑了一米多；用户的原话是「钝角弯左歪头然后后面全是乱跑」。
+    # 正确做法：沿用上一次可信的偏差，最多沿用 LOST_FRAMES_KEEP 帧（≈0.28 秒），
+    #   超过就归 0（此时车多半已经彻底丢线了，乱打更危险）。
+    if near_pair_count < PAIR_MIN_NEAR:
+        hold_frame_count += 1
+        if hold_frame_count <= LOST_FRAMES_KEEP:
+            error = last_error * int(SCALE)     # last_error 是 160 尺度，换回 320
+        else:
+            error = 0
+    else:
+        hold_frame_count = 0
 
     # ---- 换回 160 尺度，再夹到 int8（顺序不能反，先除后夹）----
     sent_error = to_sent_scale(error)
