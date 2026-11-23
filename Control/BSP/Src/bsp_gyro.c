@@ -165,7 +165,15 @@ static void SoftI2C_WaitOneBit(void)
 	 *   会把它整个优化掉，延时直接变成 0，I2C 时序就乱了。 */
 	volatile uint8_t delay_counter;
 
-	for (delay_counter = 0; delay_counter < 25; delay_counter++)
+	/* 2026-11-23 深夜：25 → 100。
+	 * 用户反馈「陀螺仪时好时坏，有时候是 0 有时候是 −999」——
+	 *   这根总线是【开漏】的（Out_OD），高电平完全靠模块板上那几个上拉电阻，
+	 *   线一长、接触一差，上升沿就慢（几微秒）。而原来 25 次空转 ≈ 1 微秒，
+	 *   半周期 1 微秒 = 约 500kHz，比标准 100kHz 快 5 倍 —— 上升沿跟不上就随机丢应答。
+	 *   这就是「每次上电像抽奖」的典型样子。
+	 * 改成 100 次 ≈ 4 微秒 → 约 125kHz，对慢上升沿宽容得多。
+	 * 代价：读一次 2 字节从约 18 微秒涨到约 145 微秒，占 5 毫秒周期的 3%，可以接受。 */
+	for (delay_counter = 0; delay_counter < 100; delay_counter++)
 	{
 	}
 }
