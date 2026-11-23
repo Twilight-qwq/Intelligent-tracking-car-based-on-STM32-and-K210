@@ -449,10 +449,21 @@ static uint8_t Task_CornerDecide(uint8_t state)
 		Corner_Active = 0;
 		if ((App_Clock() - Corner_DoneTick) > CORNER_HANDOVER_MS)
 		{
-			return 0;                   /* 交接期结束，交回视觉 */
+			/* 交接期结束：这个弯彻底完事，Corner_Done 必须在这里清掉。
+			 * 为什么非清不可（2026-11-23 夜修）：原来它只在下面「state != 2」那条分支里清，
+			 *   结果是 —— 只要视觉一直报「有弯」（哪怕车早就转完、视觉卡住），
+			 *   Corner_Clear 被反复清零、这行永远走不到，Corner_Done 就永远是 1。
+			 *   而「里程强转」的第 1 条判据正是 Corner_Done == 0，
+			 *   于是这一趟只转得动第一个弯，后面几个全直着冲过去。
+			 * 清掉以后会不会被同一个弯骗第二次？不会：段内里程在转完那一刻已经清零，
+			 *   要走够「冷却 50 厘米 + 下一段阈值 −30 厘米」才可能再被接受。 */
+			Corner_Done = 0;
 		}
-		Corner_SetTarget(CORNER_T_EXIT);
-		return 1;
+		else
+		{
+			Corner_SetTarget(CORNER_T_EXIT);
+			return 1;
+		}
 	}
 
 	if (Corner_Active)                  /* 正在转：固定差速，不看视觉 */
@@ -612,18 +623,24 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
  *   目标一直是 20，两个轮子的实际速度一直是 0，程序没有任何反应。
  *   （这件事和"停车抱死烧管子"是两码事：抱死一次只有 0.1 焦耳量级，可以忽略。）
  *
- * 判据：下面四条同时成立才算，缺一条都不算
- *   1) 有轮子被要求跑到 15 以上                 —— 慢速挪车时不判
- *   2) 两轮【平均】速度 < 1.5 个计数/5ms        —— 1.5 × 0.01402 ÷ 0.005 = 4.2 厘米/秒
- *   3) 两个速度环的输出都【正向】顶到 999‰ 以上  —— 「还在往前死推」才叫堵转
+ * 判据（逐轮判，任意一个轮子满足就算）：下面三条同时成立
+ *   1) 这个轮子被要求跑到 15 以上                —— 慢速挪车、转弯内侧轮都不判
+ *   2) 它的实际速度 < 1.5 个计数/5ms（= 4.2 厘米/秒）—— 轮子几乎不转
+ *   3) 它的速度环输出【正向】顶到 999‰ 以上       —— 「还在往前死推」才叫堵转
  *      为什么必须判正向：转弯时内侧轮的目标只有 3.45，实际被车身拖着跑 4~6，
  *      误差是负的 → 内侧环会饱和到 −1000。若用绝对值判，这条就形同虚设。
- *   4) 连续满足 400 毫秒                        —— 中途好一拍就重新计时
+ * 再加：连续满足 400 毫秒（中途好一拍就重新计时）。
  * 另外：每次启动后 500 毫秒内不检测。起步时轮子本来就还没转起来，那是正常现象，
  *   这时候速度环同样是满占空比 —— 所以「饱和」这一条挡不住起步，挡起步的是宽限期。
  *
- * 已知盲区（故意不处理）：只堵一个轮子（一侧 0、一侧正常转）时两轮平均仍 > 1.5，抓不到。
- *   要抓它得单独判单轮，而转弯内侧轮本来就贴着 0 走，误判风险大于收益。
+ * 2026-11-23 夜改：原来要求「两轮平均速度 < 1.5 且两个环都饱和」。
+ *   那个写法在转弯时有个洞：外侧轮目标 26.55、内侧轮 3.45，平均下来 15 左右，
+ *   永远大于 1.5 → 「转弯中有一个轮子被墙顶死」抓不到（外侧还在原速跑）。
+ *   改成逐轮判以后这个洞没有了；而转弯内侧轮因为「目标 3.45 < 15」压根不参与判断，
+ *   所以也不会误判。
+ *
+ * 仍然抓不到的一种（写在这里备案）：轮子被要求「几乎不转」（目标 < 15）但仍然被外力
+ *   长时间顶着 —— 那种情况下电流本来就小，不构成烧驱动的风险，故意不管。
  *
  * 返回值：1 = 这一拍已经断电停车了，调用者必须马上 return（不然占空比会被后面覆盖）。
  */
@@ -648,25 +665,22 @@ static uint8_t Task_5ms_StallGuard(uint32_t curr_ms)
 		return 0;
 	}
 
-	/* 3. 三条数据判据一起看 */
+	/* 3. 逐轮判：哪个轮子「被要求快跑 + 却在原地不动 + 速度环已经正向顶死」就算它堵转。
+	 * 为什么不用「两轮平均速度」：转弯时外侧轮目标 26.55、内侧轮只有 3.45，
+	 *   平均下来还有 15 左右，永远大于阈值 —— 于是「转弯中有一个轮子被墙顶死」抓不到
+	 *   （外侧还在原速跑，平均速度一点不低）。逐轮判就没有这个洞。
+	 * 为什么不会误判转弯内侧轮：内侧轮目标 3.45 < STALL_TARGET_MIN(15)，
+	 *   压根不参与判断。这是有意的：它本来就被要求"几乎不转"。 */
 	{
-		float avg_speed = (actual_left + actual_right) * 0.5f;   /* 两轮平均（计数/5ms） */
-		float cmd_speed = (target_left > target_right)
-		                  ? target_left : target_right;          /* 要求高的那个轮子的目标 */
-		uint8_t suspect = 0;
-
-		if (cmd_speed >= STALL_TARGET_MIN)                        /* 条件1：确实要求它快跑 */
-		{
-			if ((avg_speed <  STALL_SPEED_MAX) &&
-			    (avg_speed > -STALL_SPEED_MAX))                   /* 条件2：轮子几乎不走 */
-			{
-				if ((pid_v_left.output  >= STALL_DUTY_MIN) &&
-				    (pid_v_right.output >= STALL_DUTY_MIN))       /* 条件3：两个环都在正向死推 */
-				{
-					suspect = 1;
-				}
-			}
-		}
+		uint8_t stall_left  = ((target_left  >= STALL_TARGET_MIN) &&   /* 左轮被要求快跑 */
+		                       (pid_v_left.output  >= STALL_DUTY_MIN) && /* 左环正向顶死 */
+		                       (actual_left  <  STALL_SPEED_MAX) &&      /* 左轮几乎不转 */
+		                       (actual_left  > -STALL_SPEED_MAX));
+		uint8_t stall_right = ((target_right >= STALL_TARGET_MIN) &&
+		                       (pid_v_right.output >= STALL_DUTY_MIN) &&
+		                       (actual_right <  STALL_SPEED_MAX) &&
+		                       (actual_right > -STALL_SPEED_MAX));
+		uint8_t suspect = (stall_left || stall_right) ? 1 : 0;
 
 		/* 4. 连续够久才动手（条件4） */
 		if (suspect)
