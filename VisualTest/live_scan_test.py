@@ -779,7 +779,10 @@ def scan_frame(image):
     5 弯道信号   6 触发弯道的行下标   7 状态   8 实际发出的误差（160 尺度）
     9 备注       10 九行的单线标记图案
     """
-    global last_error, last_state, lost_frame_count, last_center
+    # hold_frame_count 必须在这里声明：它是在函数里 += 的，
+    # 不声明的话 Python 会当成局部变量，第一次读到就抛 UnboundLocalError，
+    # 整个程序当场死在那一帧（2026-11-23 深夜漏了，实车表现为“车跑两秒突然停”）。
+    global last_error, last_state, lost_frame_count, last_center, hold_frame_count
 
     rows_info = []
     pattern = []
