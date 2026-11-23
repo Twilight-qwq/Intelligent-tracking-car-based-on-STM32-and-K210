@@ -153,6 +153,11 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
 #define CM_PER_COUNT       0.01402f // 1 个编码器计数 = 多少厘米
                                     /* 2026-11-21 改回【理论值】, 不用台架手推那个数:（详见 Doc/代码说明.md §7） */
 #define TURN_ARM_SPEED     15.0f    // 等里程期间的直行速度:提前降到转弯基速,别带着最高速进弯
+/* 等里程这 16 厘米里，方向环允许的最大差速（单位同目标速度，计数/5ms）。
+ * 2026-11-23 深夜加：把方向环放回这段以后，用户反馈「弯前画龙」——
+ * 原因是弯口附近九行里常常只剩 1~3 行可用，偏差本身在跳，方向环全权跟着跳就摆起来了。
+ * 压到 ±3（20 档的 15%）以后，它只做「慢慢往中间靠」，不会被噪声带着甩。 */
+#define TURN_ARM_TURN_MAX  3.0f
 
 /* 转完90度之后,最多再直行这么久,就得把方向盘交回视觉。（详见 Doc/代码说明.md §8） */
 #define CORNER_HANDOVER_MS 500      // 转完之后最多直行 500 毫秒
@@ -854,6 +859,19 @@ static void Task_CarStop(void)
     Corner_SegMileage    = 0.0f;//清空上个弯道结束到现在走过的路程
     Finish_Armed         = 0;//清空终点兜底标志,下次跑重新等最后一个弯
     Turn_TargetAngle_Deg = TURN_TARGET_ANGLE_DEG;//恢复保守角度,下次被查表值覆盖
+
+    /* 停车时顺手再试一次陀螺仪（2026-11-23 深夜加）。
+     * 背景：开机 WHO_AM_I 一次没读通就整趟禁用，实测「偶发 −999」。
+     * 这个函数每 100 毫秒被调一次（停车状态），每 10 次（约 1 秒）试一把，
+     * 免得一直在那儿读 I2C 占时间。救回来以后这一趟就能用陀螺仪量角度。 */
+    {
+        static uint8_t gyro_recover_tick = 0;
+        if (++gyro_recover_tick >= 10)
+        {
+            gyro_recover_tick = 0;
+            Gyro_TryRecover();
+        }
+    }
 }
 
 
@@ -1141,6 +1159,13 @@ static void Task_30ms_Control(VisionData_t *vis_data)
     if (Corner_Armed && (base_speed > TURN_ARM_SPEED))
     {
         base_speed = TURN_ARM_SPEED;
+    }
+    /* 但这段是整条赛道上视觉最不可靠的时候（弯口附近九行里常常只剩 1~3 行），
+     * 所以只给「弱修正」：差速最多 ±3，别让方向环跟着跳动的偏差甩来甩去。 */
+    if (Corner_Armed)
+    {
+        if (turn >  TURN_ARM_TURN_MAX) turn =  TURN_ARM_TURN_MAX;
+        if (turn < -TURN_ARM_TURN_MAX) turn = -TURN_ARM_TURN_MAX;
     }
 
     /* 差速上限：恢复到「最多等于基础速度」（pid_l.output_max 已经是 Speed_Straight）。

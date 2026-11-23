@@ -1,4 +1,4 @@
-﻿#include "stm32f10x.h"
+#include "stm32f10x.h"
 #include "mid_delay.h"
 #include "bsp_gyro.h"
 
@@ -57,7 +57,10 @@
 /* GYRO_CHIP_NOTE_2：上电后要约 100 毫秒芯片才开始应答 I2C，
  *                  不等这一下，第一次读会全军覆没（表现为"模块没接上"）。 */
 #define GYRO_CHIP_POWER_ON_WAIT_MS  100
-#define GYRO_CHIP_DETECT_RETRY      5
+/* 2026-11-23 深夜：5 次 → 20 次。用户实测「偶发 −999」，说明 5 次（约 100 毫秒）的窗口
+ * 对这颗模块不够 —— 认不出来就整趟没有陀螺仪，太脆。放到 20 次（约 400 毫秒）只是开机多等
+ * 0.3 秒，不影响跑车。真正治本还得靠接插件和电容，软件只能把概率降下来。 */
+#define GYRO_CHIP_DETECT_RETRY      20
 #define GYRO_CHIP_DETECT_RETRY_MS   20
 
 /* GYRO_CHIP_NOTE_3：唤醒写 0x01 而不是 0x00。
@@ -604,6 +607,53 @@ void Gyro_Update(uint32_t current_ms)
 uint8_t Gyro_IsOk(void)
 {
 	return Gyro_IsAvailable;
+}
+
+/* 停车时再试着把陀螺仪救回来（2026-11-23 深夜新增，用户反馈「偶发 −999」）
+ * 为什么要它：原来是「开机认不出来就整趟禁用」，判据太硬 —— WHO_AM_I 一次没读通，这次跑车就没陀螺仪了。
+ *   车站着不动的时候本来就有的是时间，多试几次能救回一大部分。
+ * 只在停车时调用：里面有几毫秒延时，跑车时进来会把 5 毫秒周期撑爆。
+ * 返回：1 = 现在可用了。 */
+uint8_t Gyro_TryRecover(void)
+{
+	uint8_t who_am_i_value = 0;
+
+	if (Gyro_IsAvailable)
+	{
+		return 1;                                   /* 已经好的，什么都不做 */
+	}
+
+	if (!GyroChip_ReadRegisters(GYRO_CHIP_REG_WHO_AM_I, &who_am_i_value, 1))
+	{
+		return 0;                                   /* 这一下没读通，下次再说 */
+	}
+
+	Gyro_WhoAmIValue = who_am_i_value;
+
+	if ((who_am_i_value != GYRO_CHIP_ID_ICM20602) && (who_am_i_value != GYRO_CHIP_ID_MPU6050))
+	{
+		return 0;                                   /* 读到了但不是这颗芯片（总线悬空常读回 0xFF） */
+	}
+
+	/* 认出来了：把芯片重新配一遍（停车时做，阻塞十几毫秒没关系） */
+	GyroChip_WriteRegister(GYRO_CHIP_REG_POWER_MGMT,  GYRO_CHIP_POWER_ON_VALUE);
+	Delay_ms(10);
+	GyroChip_WriteRegister(GYRO_CHIP_REG_SAMPLE_RATE, GYRO_CHIP_SAMPLE_RATE_DIV);
+	GyroChip_WriteRegister(GYRO_CHIP_REG_LOW_PASS,    GYRO_CHIP_LOW_PASS_VALUE);
+	GyroChip_WriteRegister(GYRO_CHIP_REG_GYRO_CONFIG, GYRO_CHIP_RANGE_500_VALUE);
+	Delay_ms(20);
+
+	/* 零偏从头再采一遍（复位时车是停着的，正好采） */
+	Gyro_ZeroBiasReady       = 0;
+	Gyro_ZeroBiasSum         = 0.0f;
+	Gyro_ZeroBiasSampleCount = 0;
+	Gyro_BiasRestartCount    = 0;
+	Gyro_BiasSkipCount       = GYRO_BIAS_SKIP_SAMPLES;
+	Gyro_DtReady             = 0;                   /* 第一次积分按默认周期算 */
+	Gyro_TotalAngleDegrees   = 0.0f;
+
+	Gyro_IsAvailable = 1;
+	return 1;
 }
 
 uint8_t Gyro_GetWhoAmIValue(void)
