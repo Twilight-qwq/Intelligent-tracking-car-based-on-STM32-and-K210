@@ -126,7 +126,13 @@ static float last_vision_error = 0.0f; // 用于记录上一次的视觉误差�
    * 三条实车数据都指向第一个弯心在 180（报弯 151~154、开转 170.6~171.7 都吻合）。
    * 后四项还是几何值：四段 110 / 240 / 240 / 110（按弯心到弯心），等实测替换。 */
   static const float Turn_ThresholdCm[TURN_TABLE_SIZE] = { 180.0f, 110.0f, 240.0f, 240.0f, 110.0f };
-  static const float Turn_AngleDeg[TURN_TABLE_SIZE]     = {  90.0f,  38.5f, 103.0f,  38.5f,  90.0f };
+  /* 2026-11-23 深夜：全部乘 0.87（90→78、38.5→33.5、103→90）。
+   * 原因：差速撤掉那一刻车身还有约 240 度/秒的角速度，靠惯性会再多转一段。
+   * 实测（陀螺仪数据）：命令 90° 停到 −85、峰值 −103 → 多转 18°；
+   *   38.5° 那个弯停到 −32 附近、峰值 −45 → 多转 7°。大约是指令角的 13~20%。
+   * 所以指令先少给 13%，加上惯性正好落在目标角上。
+   * 注意：这个系数是"整车+地面+电量"的综合结果，换场地要重新验。 */
+  static const float Turn_AngleDeg[TURN_TABLE_SIZE]     = {  78.0f,  33.5f,  90.0f,  33.5f,  78.0f };
 #else
   #define TURN_TABLE_SIZE 3
   /* 阈值单位：厘米，从「起点 / 上一个弯转完」算起。（详见 Doc/代码说明.md §6） */
@@ -486,16 +492,22 @@ static uint8_t Task_CornerDecide(uint8_t state)
 
 	if (Corner_SegMileage < CORNER_COOLDOWN_CM)     /* 上一个弯的冷却期 */
 	{
-		Corner_SetTarget(CORNER_T_STRAIGHT);
-		return 1;
+		/* 2026-11-23 深夜改：这里原来直接 Corner_SetTarget(CORNER_T_STRAIGHT) 并 return 1，
+		 * 等于冷却的 50 厘米里方向环完全不管。
+		 * 抓包实测（用户在钝角弯后失控的那一趟）：转完 50 厘米内目标一直是 20.00 / 20.00，
+		 * 而视觉偏差从 0 一路涨到 +42（= 20 厘米）—— 车歪着跑完这 50 厘米才重新开始纠。
+		 * 现在改成 return 0：冷却期照样「不认下一个弯」，但方向交给方向环。
+		 * 这正是用户说的「开始过钝角弯就歪了」。 */
+		return 0;
 	}
 
 #if TURN_USE_MILEAGE_TABLE
 	if ((Corner_SegMileage < (Turn_ThresholdCm[Corner_Index] - TURN_DIST_EARLY_CM)) ||
 	    (Corner_SegMileage > (Turn_ThresholdCm[Corner_Index] + TURN_DIST_LATE_CM)))
 	{
-		Corner_SetTarget(CORNER_T_STRAIGHT);        /* 里程对不上 = 假信号 */
-		return 1;
+		/* 里程对不上 = 这次报弯是假的，不认它。
+		 * 2026-11-23 深夜同样改成 return 0：不信这次报弯，不等于「连方向都不打」。 */
+		return 0;
 	}
 #endif
 
