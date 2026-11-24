@@ -46,7 +46,7 @@ ROW_TARGET_CM = (
 )
 NEAR_ROW_COUNT = 4                 # 前几行算偏差
 SCAN_ROW_COUNT = 9                 # 总共几行（126/137 厘米那两行实测认不出，挪到 70~110 了）
-NEAR_WEIGHT = (3, 3, 2, 2)         # 近 4 行的权重：越近越可信
+NEAR_WEIGHT = (0, 4, 2, 0)         # 近 4 行的权重：越近越可信
 FAR_WEIGHT = (3, 3, 2, 2, 1)       # 远 5 行的权重：越近的远行越可信
 
 # ---- 扫描窗口：每行只扫"车道可能出现的那一段"，不再全宽 8~311 ----
@@ -492,6 +492,9 @@ NOTE_LATE = 4            # 弯中偏差一直回不到正数：可能来不及�
 NOTE_SLOW = 5            # 降到最慢档了，但还没到打方向的门槛 —— 只减速，方向没动
 
 last_error = 0          # 上一帧实际发出去的误差（160 尺度），丢线时要用
+# 2026-11-24 上午 11:4x 加：看不清（近两行都没有「两条线都在」）时，沿用上次偏差的帧数。
+# 用它来限制「最多沿用几帧」，防止一直抱着一个旧值不放。
+blind_hold_count = 0
 last_state = 0
 lost_frame_count = 0
 hold_frame_count = 0    # 「近处看不全、正在沿用上次偏差」连续了多少帧（2026-11-23 深夜加）
@@ -782,7 +785,7 @@ def scan_frame(image):
     # hold_frame_count 必须在这里声明：它是在函数里 += 的，
     # 不声明的话 Python 会当成局部变量，第一次读到就抛 UnboundLocalError，
     # 整个程序当场死在那一帧（2026-11-23 深夜漏了，实车表现为“车跑两秒突然停”）。
-    global last_error, last_state, lost_frame_count, last_center, hold_frame_count
+    global last_error, last_state, lost_frame_count, last_center, hold_frame_count, blind_hold_count
 
     rows_info = []
     pattern = []
@@ -862,7 +865,25 @@ def scan_frame(image):
             far_weight_sum += weight
             far_found_row_count += 1
 
-    raw_error = near_sum // near_weight_sum if near_weight_sum > 0 else 0
+    # ---- 【2026-11-24 上午 11:4x】看不清的时候，有条件地沿用上次偏差 ----
+    # 为什么要有条件（第一版无条件沿用，用户实测「直角弯转角太大」被打回）：
+    #   弯口那一片九行大面积掉，上一次有效偏差很可能正是弯道的假偏差；
+    #   无条件沿用 = 一直按那个假偏差打方向，车进弯前就被拽歪。
+    # 三个条件同时满足才沿用：
+    #   ① 上次偏差本身很小（|偏差| <= 6 格 ≈ 2.9 厘米）—— 说明当时在直道上，不在弯口
+    #   ② 最多连续沿用 3 帧（3 帧 × 28 毫秒 ≈ 84 毫秒）—— 不能抱着旧值不放
+    #   ③ 一旦出现有票的帧，计数清零，重新算
+    # 不满足就置 0（就是改动之前的行为，安全）。
+    # 单位：raw_error 是 320 像素尺度；last_error 存 160 尺度，乘 SCALE 换回来。
+    if near_weight_sum > 0:
+        raw_error = near_sum // near_weight_sum
+        blind_hold_count = 0
+    elif (abs(last_error) <= 6) and (blind_hold_count < 3):
+        raw_error = last_error * int(SCALE)
+        blind_hold_count += 1
+    else:
+        raw_error = 0
+        blind_hold_count = 0
     far_raw_error = (far_sum // far_weight_sum
                      if far_weight_sum > 0 else raw_error)
 

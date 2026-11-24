@@ -157,18 +157,8 @@ static int16_t  Gyro_WhileStillMin         = 0;      /* 本窗口原始读数最
 static int16_t  Gyro_WhileStillMax         = 0;      /* 本窗口原始读数最大值 */
 
 /* 静止重估零偏的总开关（2026-11-24 凌晨 00:5x 加，当天就栽了一次）
- *
- * 为什么要这个开关（血的教训）：
- *   第一版没有开关，只要「0.5 秒内读数几乎不动」就重估零偏并把角度清零。
- *   实车马上出问题：车贴在内侧线上进弯，原地打转被卡住、根本转不动，
- *   陀螺仪读数就是「几乎不动」→ 被判成静止 → 累计角度被清零 →
- *   永远到不了目标角度 → 转弯只能等 600 毫秒超时 → 实测转了 135 度。
- *
- * 所以现在只允许「车被命令停车」时才做这件事。
- * 由 Control 层调用 Gyro_SetStillTrim(1/0) 来开关：
- *   CarRun_State == 0（停车）→ 1
- *   CarRun_State == 1（在跑）→ 0
- * 跑车期间这个机制一次都不会触发，转弯绝无可能被它清零。 */
+ * （精简版：完整来龙去脉见 Doc/问题记录.md）
+ */
 static uint8_t  Gyro_StillTrimEnable       = 0;
 
 void Gyro_SetStillTrim(uint8_t enable)
@@ -557,8 +547,8 @@ void Gyro_Update(uint32_t current_ms)
 	{
 		sample_period_seconds = GYRO_SAMPLE_PERIOD_SECONDS;
 		Gyro_DtReady = 1;
+		Gyro_LastUpdateMs = current_ms;   /* 第一次调用：在这里记，下一拍才有得减 */
 	}
-	Gyro_LastUpdateMs = current_ms;
 
 #if GYRO_READ_ALL_AXES
 	start_register  = GYRO_CHIP_REG_AXIS_START;   /* 0x43，一次拿 X/Y/Z */
@@ -586,6 +576,17 @@ void Gyro_Update(uint32_t current_ms)
 	}
 
 	Gyro_ConsecutiveFailCount = 0;
+
+	/* 【2026-11-24 中午 11:5x 修的真 bug】
+	 * 这一行原来在「读之前」就执行了（Gyro_LastUpdateMs = current_ms）。
+	 * 后果：读失败的那一拍，时间戳已经被记掉，那一拍的转动**永久丢失** ——
+	 *   陀螺仪积分是「转速 × 时间」，时间被吃掉，角度就少算。
+	 * 而转弯时电机振动、大电流干扰最重，I2C 最容易被干扰 → 读失败多 → 角度追不上
+	 *   → 程序以为没转够 → 一直转到 600 毫秒兜底超时 → 实测转 180°。
+	 * 这也解释了用户说的「有时候正常 90、有时候 180」：每次读失败的次数不一样。
+	 * 现在挪到「读成功之后」才更新时间戳：丢的那一段会在下一次成功时一次性补回来
+	 *   （单次最多补 GYRO_DT_MAX_MS = 50 毫秒，防止一下子补太多）。 */
+	Gyro_LastUpdateMs = current_ms;
 
 #if GYRO_READ_ALL_AXES
 	axis_x_raw = (int16_t)(((uint16_t)axis_raw_bytes[0] << 8) | axis_raw_bytes[1]);  /* 0x43/0x44 = X 轴 */
@@ -650,26 +651,8 @@ void Gyro_Update(uint32_t current_ms)
 	                          / GYRO_COUNTS_PER_DEGREE_PER_SECOND;
 
 	/* ===== 静止重估零偏（2026-11-24 凌晨加，用户报「I3 没跑也一直递减」）=====
-	 *
-	 * 为什么要它：
-	 *   零偏只在上电后那 1 秒采一次，之后再也不更新。可是用户上电时正在摆车，
-	 *   摆车的转动会被平均进零偏；芯片热起来以后零点也会飘。
-	 *   于是「原始读数 − 零偏」不再是 0，而是剩一个固定偏差。
-	 *   下面那个 ±1 度/秒的死区是按**每一拍的转速**挡的，只要这个偏差超过 1 度/秒，
-	 *   死区就整个失效 —— 静止时也在积分，累计角度一路减到很大的负数。
-	 *
-	 * 怎么判「车真的静止」：
-	 *   连续 GYRO_STILL_SAMPLES 个样本（100 个 × 5 毫秒 = 0.5 秒）里，
-	 *   原始读数的「最大值 − 最小值」小于 GYRO_STILL_SPREAD_MAX（40 计数 ≈ 0.6 度/秒）。
-	 *   车在动的时候，哪怕只是慢慢转，这 0.5 秒里的读数也会散得很开，绝对不满足。
-	 *
-	 * 满足了就干两件事：
-	 *   ① 把这 0.5 秒的平均值当新的零偏（车不动时真实角速度一定是 0，平均值就是零点）
-	 *   ② 把累计角度清零（此时清零不会冤枉任何真实转动）
-	 *
-	 * 为什么不会害到转弯：
-	 *   转弯时转速是几百计数，0.5 秒内必然超过 40 计数的散布，判据不成立，
-	 *   所以转弯全程零偏和角度都不会被这个机制碰。 */
+	 * （精简版：完整来龙去脉见 Doc/问题记录.md）
+	 */
 	if (Gyro_StillTrimEnable)
 	{
 		if (Gyro_WhileStillCount == 0)
