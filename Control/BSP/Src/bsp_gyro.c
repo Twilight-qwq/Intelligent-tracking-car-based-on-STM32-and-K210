@@ -2,17 +2,7 @@
 #include "mid_delay.h"
 #include "bsp_gyro.h"
 
-/* =========================================================================
- * 陀螺仪 ICM-20602（六轴，软件 I2C，SCL = PB0，SDA = PB1）
- *
- * 芯片确认：用户实际用的是 ICM-20602（不是 MPU6050）。
- *   和 MPU6050 的寄存器基本兼容（PWR_MGMT_1 / GYRO_CONFIG 地址一样），
- *   但有三处不同，见下面 GYRO_CHIP_NOTE_ 开头的注释。
- *
- * 命名约定：本文件里没有单字母变量名。
- *   寄存器地址一律以 GYRO_CHIP_REG_ 开头，芯片常量以 GYRO_CHIP_ 开头，
- *   本模块的状态变量以 Gyro_ 开头，参数一律写全拼。
- * ========================================================================= */
+/* ========================================================================= */
 
 /* ==================== 引脚与地址 ==================== */
 
@@ -29,84 +19,46 @@
 #define GYRO_CHIP_REG_POWER_MGMT    0x6B
 #define GYRO_CHIP_REG_WHO_AM_I      0x75
 
-/* 陀螺仪三轴数据从 0x43 开始，连续 6 个字节：
- *   0x43/0x44 = X 轴高/低字节    0x45/0x46 = Y 轴    0x47/0x48 = Z 轴
- * 出处：本地手册 RM-MPU-6000A 寄存器表（_手册简化/text/RM-MPU-6000A.p1-50.dump.md
- *       第 568~596 行：43=GYRO_XOUT_H、45=GYRO_YOUT_H、47=GYRO_ZOUT_H）
- * 2026-11-21 修正：原来这里写的是 0x43，那是【X 轴】不是 Z 轴。
- *   表现就是"手转 90° 角度几乎不动"（用户实测只变了 3 度）——
- *   因为模块平放时 X 轴感受不到绕竖直轴的转动。 */
+/* 陀螺仪三轴数据从 0x43 开始，连续 6 个字节： */
 #define GYRO_CHIP_REG_AXIS_START    0x43
 #define GYRO_CHIP_REG_AXIS_Z        0x47    /* GYRO_ZOUT_H，Z 轴高字节 */
 
-/* 读几个轴（2026-11-21 加）
- * 0 = 只读 Z 轴 2 个字节（默认）：Z 是竖直轴，跑车只用它。
- *     一次读约 48 位，比读三轴少 43% 的时间（0.35 毫秒 → 0.20 毫秒）。
- * 1 = 读 X/Y/Z 三轴 6 个字节：只在需要重新确认「哪根是竖直轴」时用
- *     （比如模块重新装过、换了一个模块）。这时台架模式的 I1/I2 才有数。
- * 改完记着：读 0 的时候台架 I1、I2 会恒为 0，这是正常的，不是坏。 */
 #define GYRO_READ_ALL_AXES          0
 
-/* GYRO_CHIP_NOTE_1：WHO_AM_I 的返回值。
- *   ICM-20602 = 0x12（18）
- *   MPU6050   = 0x68（104）
- * 两个都认，认到哪个都能用。 */
+/* GYRO_CHIP_NOTE_1：WHO_AM_I 的返回值。 */
 #define GYRO_CHIP_ID_ICM20602       0x12
 #define GYRO_CHIP_ID_MPU6050        0x68
 
-/* GYRO_CHIP_NOTE_2：上电后要约 100 毫秒芯片才开始应答 I2C，
- *                  不等这一下，第一次读会全军覆没（表现为"模块没接上"）。 */
+/* GYRO_CHIP_NOTE_2：上电后要约 100 毫秒芯片才开始应答 I2C， */
 #define GYRO_CHIP_POWER_ON_WAIT_MS  100
-/* 2026-11-23 深夜：5 次 → 20 次。用户实测「偶发 −999」，说明 5 次（约 100 毫秒）的窗口
- * 对这颗模块不够 —— 认不出来就整趟没有陀螺仪，太脆。放到 20 次（约 400 毫秒）只是开机多等
- * 0.3 秒，不影响跑车。真正治本还得靠接插件和电容，软件只能把概率降下来。 */
 #define GYRO_CHIP_DETECT_RETRY      20
 #define GYRO_CHIP_DETECT_RETRY_MS   20
 
-/* GYRO_CHIP_NOTE_3：唤醒写 0x01 而不是 0x00。
- *   0x00 = 唤醒，但时钟用内部 RC（会漂）
- *   0x01 = 唤醒 + 时钟切到陀螺仪 PLL（ICM-20602 推荐这个）
- * 如果读出来角速度一直是 0，把它改回 0x00 再试。 */
+/* GYRO_CHIP_NOTE_3：唤醒写 0x01 而不是 0x00。 */
 #define GYRO_CHIP_POWER_ON_VALUE    0x01
 #define GYRO_CHIP_SAMPLE_RATE_DIV   0x04    /* 1kHz/(1+4) = 200Hz，和 5 毫秒对齐 */
 #define GYRO_CHIP_LOW_PASS_VALUE    0x03    /* 低通 44Hz */
 
-/* 量程 ±500 度/秒这一档：1 度/秒 = 65.5 个数字。
- * 为什么不用 ±250：上车转 90° 平均 240 度/秒，±250 只剩 4% 余量，
- *   加速段会削顶，读数被削平后陀螺仪会以为只转了 70 度。
- * 出处：本地手册 RM-MPU-6000A 第 2413~2421 行的 FS_SEL 表
- *       （FS_SEL=1 → ±500 度/秒 → 65.5 LSB/(度/秒)）；
- *       FS_SEL 是 GYRO_CONFIG(0x1B) 的 bit4~3，写 0x08 就是 FS_SEL=1。 */
+/* 量程 ±500 度/秒这一档：1 度/秒 = 65.5 个数字。 */
 #define GYRO_CHIP_RANGE_500_VALUE           0x08
 #define GYRO_COUNTS_PER_DEGREE_PER_SECOND   65.5f
 
-/* 调用周期：5 毫秒 = 0.005 秒。只在第一次调用时当默认值用，
- * 之后一律用「这次和上次隔了多少毫秒」的真实间隔。 */
+/* 调用周期：5 毫秒 = 0.005 秒。只在第一次调用时当默认值用， */
 #define GYRO_SAMPLE_PERIOD_SECONDS          0.005f
 
 /* 真实间隔的上限：超过这个就当卡死过，按 50 毫秒算，别把一大段时间乘进角度里 */
 #define GYRO_DT_MAX_MS                      50u
 
-/* 死区：转速绝对值小于这个数，就当"没在转"，不往角度里加。
- * 为什么需要：零偏切得不干净时，静止也会以 0.476 度/秒慢慢往上爬
- *   （用户实测：21 秒加了 10 度，10/21 = 0.476 度/秒）。
- * 为什么定 1.0：转弯真转速是 240 度/秒，差 240 倍，绝不可能把真转弯判成没转；
- *   代价只是转弯刚开始、转速还没升上来那一下不计，实测丢不到 0.02 度。 */
+/* 死区：转速绝对值小于这个数，就当"没在转"，不往角度里加。 */
 #define GYRO_RATE_DEADBAND_DPS              1.0f
 
-/* 上电后要扔掉的开头：芯片刚醒的头几十毫秒读数是乱的，
- * 混进零偏会把零偏整体拉偏（这就是那 0.476 度/秒的来源）。
- * 先等 50 毫秒，再丢掉 40 个样本（40 × 5 毫秒 = 200 毫秒），之后才开始采零偏。 */
+/* 上电后要扔掉的开头：芯片刚醒的头几十毫秒读数是乱的， */
 #define GYRO_CHIP_STARTUP_WAIT_MS           50
 #define GYRO_BIAS_SKIP_SAMPLES              40
 
 /* 200 × 5 毫秒 = 1 秒，要求这 1 秒车是静止的 */
 #define GYRO_ZERO_BIAS_SAMPLE_TARGET        200
-/* 零偏采样期间，最大值和最小值差超过这么多，就认为车被人动过，这一批作废重采。
- * 为什么需要：零偏要求车静止，而 Gyro_Update() 在停车状态也照跑。
- *   上电后 1.2 秒内摆车、对线，那些真实转动会被平均进零偏；
- *   零偏一偏，之后每帧都减错 —— 偏大就转过量（最坏转到 800ms 超时 ≈190 度）。
- * 300 个数字 ≈ 4.6 度/秒，静止时的噪声只有几个数字，手转一下是几千，很好区分。 */
+/* 零偏采样期间，最大值和最小值差超过这么多，就认为车被人动过，这一批作废重采。 */
 #define GYRO_BIAS_MAX_SPREAD                300
 /* 最多重采几次。不加这个上限的话，人一直晃车就永远采不完零偏。 */
 #define GYRO_BIAS_MAX_RESTART               3
@@ -143,9 +95,6 @@ static int16_t  Gyro_BiasSampleMin         = 0;      /* 采零偏期间，这一
 static int16_t  Gyro_BiasSampleMax         = 0;      /* 采零偏期间，这一批样本的最大值 */
 static uint8_t  Gyro_BiasRestartCount      = 0;      /* 已经因为「车在动」重采了几次 */
 
-/* ===== 静止重估零偏用的变量（2026-11-24 凌晨加）=====
- * 思路：把「连续 100 个样本的原始读数」攒成一个统计窗口，
- *   一看它就天然能算出平均值（新零偏）和极差（判断车到底动没动）。 */
 #define GYRO_STILL_SAMPLES      100     /* 一个统计窗口多少样本：100 × 5 毫秒 = 0.5 秒 */
 #define GYRO_STILL_SPREAD_MAX   40      /* 这 0.5 秒里原始读数的极差要小于这么多计数才算「没动」。
                                          * 65.5 计数 = 1 度/秒，所以 40 计数 ≈ 0.6 度/秒。
@@ -156,9 +105,6 @@ static uint16_t Gyro_WhileStillCount       = 0;      /* 本窗口已经攒了几
 static int16_t  Gyro_WhileStillMin         = 0;      /* 本窗口原始读数最小值 */
 static int16_t  Gyro_WhileStillMax         = 0;      /* 本窗口原始读数最大值 */
 
-/* 静止重估零偏的总开关（2026-11-24 凌晨 00:5x 加，当天就栽了一次）
- * （精简版：完整来龙去脉见 Doc/问题记录.md）
- */
 static uint8_t  Gyro_StillTrimEnable       = 0;
 
 void Gyro_SetStillTrim(uint8_t enable)
@@ -176,10 +122,7 @@ void Gyro_SetStillTrim(uint8_t enable)
 	}
 }
 
-/* 连续失败这么多次（3 × 5 毫秒 = 15 毫秒）就试着救一次总线。
- * 原来是 10 次（50 毫秒）：这 50 毫秒里每次读失败都直接 return，角度完全不积分，
- * 转弯中撞上一次就是 240 度/秒 × 0.05 秒 ≈ 12 度没了。
- * 降到 3 次只损失约 3.6 度。救总线本身很便宜：SDA 是高电平（正常总线）就直接返回。 */
+/* 连续失败这么多次（3 × 5 毫秒 = 15 毫秒）就试着救一次总线。 */
 #define GYRO_RECOVERY_AFTER_FAILS           3
 
 /* ==================== 软件 I2C 的引脚操作 ==================== */
@@ -193,19 +136,9 @@ void Gyro_SetStillTrim(uint8_t enable)
 /* 位延时：72MHz 下大约 1 微秒，凑成 100kHz 左右 */
 static void SoftI2C_WaitOneBit(void)
 {
-	/* delay_counter：空转计数用的临时变量。
-	 * 为什么必须加 volatile：不加的话编译器一看"这个循环什么也没干"，
-	 *   会把它整个优化掉，延时直接变成 0，I2C 时序就乱了。 */
+	/* delay_counter：空转计数用的临时变量。 */
 	volatile uint8_t delay_counter;
 
-	/* 2026-11-23 深夜：25 → 100。
-	 * 用户反馈「陀螺仪时好时坏，有时候是 0 有时候是 −999」——
-	 *   这根总线是【开漏】的（Out_OD），高电平完全靠模块板上那几个上拉电阻，
-	 *   线一长、接触一差，上升沿就慢（几微秒）。而原来 25 次空转 ≈ 1 微秒，
-	 *   半周期 1 微秒 = 约 500kHz，比标准 100kHz 快 5 倍 —— 上升沿跟不上就随机丢应答。
-	 *   这就是「每次上电像抽奖」的典型样子。
-	 * 改成 100 次 ≈ 4 微秒 → 约 125kHz，对慢上升沿宽容得多。
-	 * 代价：读一次 2 字节从约 18 微秒涨到约 145 微秒，占 5 毫秒周期的 3%，可以接受。 */
 	for (delay_counter = 0; delay_counter < 100; delay_counter++)
 	{
 	}
@@ -333,14 +266,6 @@ static uint8_t SoftI2C_ReadByte(uint8_t send_acknowledge)
 	return received_byte;
 }
 
-/* ==================== 总线恢复（2026-11-21 新增） ====================
- * 干什么：如果从机把 SDA 一直拉低（上电时序乱了、突然掉电、被静电打懵），
- *         主机会永远收到"不应答"，角度再也不涨。
- * 标准救法：主机自己打最多 9 个时钟，让从机把没发完的字节发完、松开 SDA，
- *         再补一个停止条件，总线就自由了。
- * 什么时候调：① 上电初始化时先来一次；② 连续读失败 10 次（50 毫秒）时救一次。
- * 为什么不会干扰正常通信：正常总线上 SDA 是高的，函数第一句就 return，什么都不做。
- * 代价：每次读失败多一次比较；只有真失败时才打那 9 个时钟（约 0.2 毫秒）。 */
 static void SoftI2C_BusRecovery(void)
 {
 	uint8_t pulse_count;    /* 已经打了几个时钟脉冲。最多打 9 个 ——
@@ -373,10 +298,7 @@ static void SoftI2C_BusRecovery(void)
 
 /* ==================== 芯片寄存器读写 ==================== */
 
-/* 往芯片的某一个寄存器写一个字节。
- * register_address：寄存器地址，比如 0x6B 是 PWR_MGMT_1（电源管理，用来唤醒芯片）
- * register_value  ：要写进去的值，比如 0x01 是"唤醒 + 时钟切到陀螺仪 PLL"
- * 返回 1 = 写成功；0 = 中途从机没应答（模块没接上或者坏了）。 */
+/* 往芯片的某一个寄存器写一个字节。 */
 static uint8_t GyroChip_WriteRegister(uint8_t register_address, uint8_t register_value)
 {
 	SoftI2C_Start();
@@ -400,11 +322,7 @@ static uint8_t GyroChip_WriteRegister(uint8_t register_address, uint8_t register
 	return 1;
 }
 
-/* 从芯片连续读若干个寄存器（芯片会自动把寄存器地址往后加，所以只要给起始地址）。
- * start_register：从哪个寄存器开始读。0x47 = Z 轴高字节；0x43 = X 轴高字节（一次读三轴时用）
- * read_buffer   ：读回来的字节放到这个数组里，数组由调用者自己准备
- * read_count    ：要读几个字节。只读 Z 轴 = 2；读 X/Y/Z 三轴 = 6
- * 返回 1 = 全部读完；0 = 中途从机没应答，此时 read_buffer 里的内容是作废的，不要用。 */
+/* 从芯片连续读若干个寄存器（芯片会自动把寄存器地址往后加，所以只要给起始地址）。 */
 static uint8_t GyroChip_ReadRegisters(uint8_t start_register, uint8_t *read_buffer, uint8_t read_count)
 {
 	uint8_t byte_index;     /* 当前读到第几个字节（0 ~ read_count-1） */
@@ -441,12 +359,8 @@ static uint8_t GyroChip_ReadRegisters(uint8_t start_register, uint8_t *read_buff
 }
 
 /* 毫秒延时用 MiddleLayer 的 Delay_ms（SysTick 轮询，精确到微秒）。
- * 2026-11-21 换掉原来自己写的空循环：那个"1 毫秒 = 12000 次空循环"是估的，
- * 误差可能 30%，而且改编译优化等级就变。现在只在 Gyro_Init 里用，
- * 不在主循环、不在 I2C 位时序里，所以不会占跑车时的时间。
  * 注意：Delay_us 千万不要拿去替换 SoftI2C_WaitOneBit()——
- *   那个位延时是 25 次空循环（约 1 微秒），换成 Delay_us 要写 4 个 SysTick 寄存器，
- *   读一次 6 字节有 90 个位，每次读会从 0.9 毫秒涨到 2~3 毫秒，5 毫秒周期直接撑爆。 */
+ */
 
 /* ==================== 对外接口 ==================== */
 
@@ -499,9 +413,7 @@ void Gyro_Init(void)
 	Gyro_WhileStillCount = 0;
 }
 
-/* 每 5 毫秒调一次：前 1 秒测零偏，之后按 Z 轴积分
- * 一次读 6 个字节把 X/Y/Z 全拿回来：模块要是侧着装，绕竖直轴的转动
- * 就落在 X 或 Y 上，只读 Z 会永远是 0（2026-11-21 踩过这个坑）。 */
+/* 每 5 毫秒调一次：前 1 秒测零偏，之后按 Z 轴积分 */
 void Gyro_Update(uint32_t current_ms)
 {
 	uint8_t axis_raw_bytes[6];          /* 从芯片读回来的原始字节，最多 6 个（X/Y/Z 各 2 个）。
@@ -523,17 +435,6 @@ void Gyro_Update(uint32_t current_ms)
 		return;
 	}
 
-	/* 真实周期：这次调用和上次隔了多少毫秒。                 2026-11-21 改
-	 * 为什么不再固定乘 0.005（5 毫秒）：
-	 *   ① 主循环不是精确的 5 毫秒节拍。被中断、被长任务打断，某一轮就会变长；
-	 *   ② 波形发送改成 DMA 以后，Debug_log 已经是微秒级返回，
-	 *      「被波形阻塞约 2 毫秒」这个理由**不再成立**
-	 *      （那是轮询发送时的事：100 毫秒发一次 24 字节，115200 下约 2 毫秒）；
-	 *   ③ 但「固定按 5 毫秒积分」本身仍然是错的：
-	 *      只要有一轮真的变成 7 毫秒，这一帧的转速贡献就低估约 28%（5 ÷ 7），
-	 *      一个 374 毫秒的弯里来几次，累计能少算 1 度多，车会转过头。
-	 * 所以做法保留、理由改写：它防的是「主循环被打断」，不是「被 Debug_log 打断」。
-	 * 代价：一次减法，不占额外时间。 */
 	if (Gyro_DtReady)
 	{
 		delta_ms = current_ms - Gyro_LastUpdateMs;
@@ -577,15 +478,6 @@ void Gyro_Update(uint32_t current_ms)
 
 	Gyro_ConsecutiveFailCount = 0;
 
-	/* 【2026-11-24 中午 11:5x 修的真 bug】
-	 * 这一行原来在「读之前」就执行了（Gyro_LastUpdateMs = current_ms）。
-	 * 后果：读失败的那一拍，时间戳已经被记掉，那一拍的转动**永久丢失** ——
-	 *   陀螺仪积分是「转速 × 时间」，时间被吃掉，角度就少算。
-	 * 而转弯时电机振动、大电流干扰最重，I2C 最容易被干扰 → 读失败多 → 角度追不上
-	 *   → 程序以为没转够 → 一直转到 600 毫秒兜底超时 → 实测转 180°。
-	 * 这也解释了用户说的「有时候正常 90、有时候 180」：每次读失败的次数不一样。
-	 * 现在挪到「读成功之后」才更新时间戳：丢的那一段会在下一次成功时一次性补回来
-	 *   （单次最多补 GYRO_DT_MAX_MS = 50 毫秒，防止一下子补太多）。 */
 	Gyro_LastUpdateMs = current_ms;
 
 #if GYRO_READ_ALL_AXES
@@ -650,9 +542,6 @@ void Gyro_Update(uint32_t current_ms)
 	rate_degrees_per_second = ((float)axis_z_raw - Gyro_ZeroBias)
 	                          / GYRO_COUNTS_PER_DEGREE_PER_SECOND;
 
-	/* ===== 静止重估零偏（2026-11-24 凌晨加，用户报「I3 没跑也一直递减」）=====
-	 * （精简版：完整来龙去脉见 Doc/问题记录.md）
-	 */
 	if (Gyro_StillTrimEnable)
 	{
 		if (Gyro_WhileStillCount == 0)
@@ -694,11 +583,6 @@ uint8_t Gyro_IsOk(void)
 	return Gyro_IsAvailable;
 }
 
-/* 停车时再试着把陀螺仪救回来（2026-11-23 深夜新增，用户反馈「偶发 −999」）
- * 为什么要它：原来是「开机认不出来就整趟禁用」，判据太硬 —— WHO_AM_I 一次没读通，这次跑车就没陀螺仪了。
- *   车站着不动的时候本来就有的是时间，多试几次能救回一大部分。
- * 只在停车时调用：里面有几毫秒延时，跑车时进来会把 5 毫秒周期撑爆。
- * 返回：1 = 现在可用了。 */
 uint8_t Gyro_TryRecover(void)
 {
 	uint8_t who_am_i_value = 0;
