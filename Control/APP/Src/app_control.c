@@ -59,6 +59,12 @@
                                      */
 #define TURN_TIMEOUT_MS   600      // 兜底:0.6秒还没转够就强制结束(陀螺仪冻住时才会到)
 
+/* 转弯收尾制动（2026-11-26 加）：角度到目标后改反向差速，把收手那一下甩出去的度吃回来 */
+#define TURN_BRAKE_VALUE      8.0f    /* 制动反向差速，单位同 TURN_VALUE：每 1 个计数 = 左右各 ±1 = 差 2 个计数 ≈ 24.7 度/秒，所以 8.0 → 约 198 度/秒 */
+#define TURN_BRAKE_RATE_DPS   20.0f   /* 角速度降到这以下才算真的停住，单位 度/秒 */
+#define TURN_BRAKE_TIMEOUT_MS 60     /* 制动最长这么久。60 毫秒 × 198 度/秒 ≈ 12 度，再长就会把车拽回头 */
+#define GYRO_DPS_PER_COUNT    (1.0f / 65.5f)  /* 65.5 计数 = 1 度/秒，见 bsp_gyro.c 第 44 行 */
+
 #define TURN_BIAS_WINDOW_CM  80.0f
 static const float Turn_LineBias[TURN_TABLE_SIZE] = { 0.0f, -26.0f, 0.0f, -26.0f, 0.0f };   /* 见下面的表 */
 
@@ -68,6 +74,11 @@ static uint8_t  Corner_Clear  = 0;    // 连续多少帧视觉说"不是弯"
 static float    Corner_ArmDist = 0.0f; // 报弯后已经走的距离(换算厘米)
 static float    Corner_Accum  = 0.0f;  // 累计(左轮-右轮)counts, 就是转过的角度
 static uint32_t Corner_Tick   = 0;     // 本次转弯开始的时刻, 供兜底超时用
+static uint8_t  Corner_Braking   = 0;  // 0=没制动 1=正在反向差速制动 2=已制动过(不许再进)
+static uint32_t Corner_BrakeTick = 0;  // 制动开始的那一拍
+	static float Corner_TurnPeakAngle = 0.0f;   // 本弯转弯期间陀螺仪认到的最大角度
+	static float Corner_LastPeakAngle = 0.0f;   // 锁存:上一个弯的峰值角度(直道漂移不计)
+	static float Corner_LastEndAngle  = 0.0f;   // 锁存:上一个弯收手那一刻的角度
 static uint32_t Corner_DoneTick = 0;   // 转完的时刻, 供"限时交回视觉"用
 static uint8_t  Corner_Index      = 0;      // 正要去第几个要甩的弯(查表下标)
 static uint8_t  Corner_TurnedForIndex = 0;
@@ -364,6 +375,13 @@ static void Corner_SetTarget(uint8_t kind)
  */
 static uint8_t Task_CornerDecide(uint8_t state)
 {
+	/* 制动期间：目标速度由 5 毫秒任务直接写，这里一律不插手。
+	   （不写 target 比写错安全：两套代码抢同一组目标最容易埋雷） */
+	if (Corner_Braking == 1)
+	{
+		return 1;
+	}
+
 	if (state != 2)
 	{
 		/* 要连续 3 次方向环（3 × 30ms = 90ms）都说「不是弯」才算过去 */
@@ -484,6 +502,14 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 	{
 		Corner_Accum += (actual_left - actual_right);   // 老办法用；走陀螺仪时只作记录
 
+		/* 峰值取样：只在 Corner_Active 期间跑，直道上的微小漂移碰不到这里 */
+		if (Turn_TargetAngle_Deg > 10.0f)
+		{
+			float peak_now = Gyro_GetTotalAngle();
+			if (peak_now < 0.0f) peak_now = -peak_now;
+			if (peak_now > Corner_TurnPeakAngle) Corner_TurnPeakAngle = peak_now;
+		}
+
 		if (Gyro_IsOk() && (Turn_TargetAngle_Deg > 10.0f) && (Corner_Accum > 1400.0f))
 		{
 			float gyro_angle_now = Gyro_GetTotalAngle();
@@ -495,11 +521,47 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 			}
 		}
 
+		/* 制动阶段：反向差速（内侧轮比外侧轮快），专门吃掉收手之后那 20 度的白转 */
+		if (Corner_Braking == 1)
+		{
+			float brake_rate = ((float)Gyro_GetAxisZRaw() - Gyro_GetZeroBias()) * GYRO_DPS_PER_COUNT;
+			if (brake_rate < 0.0f) brake_rate = -brake_rate;
+
+			target_left  = TURN_SPEED - TURN_BRAKE_VALUE;
+			target_right = TURN_SPEED + TURN_BRAKE_VALUE;
+
+			if ((brake_rate < TURN_BRAKE_RATE_DPS) || ((curr_ms - Corner_BrakeTick) > TURN_BRAKE_TIMEOUT_MS))
+			{
+				Corner_Braking = 2;   /* 2=已制动过，不许再进；落到下面走正常收手 */
+			}
+			else
+			{
+				return;               /* 还在转，这一拍不动状态机 */
+			}
+		}
+
 		if(Corner_TurnAngleReached() || (curr_ms - Corner_Tick) > TURN_TIMEOUT_MS)//转角足够或超时
 		{
+			/* 角度刚好够（不是超时），陀螺仪还在：先别收手，进制动阶段 */
+			if ((Corner_Braking == 0) && (Turn_TargetAngle_Deg > 10.0f) && Gyro_IsOk()
+				&& ((curr_ms - Corner_Tick) <= TURN_TIMEOUT_MS))
+			{
+				Corner_Braking   = 1;
+				Corner_BrakeTick = curr_ms;
+				return;               /* 下一拍开始制动 */
+			}
+
 			Corner_Active = 0;//转够了(或超时兜底),不再按弯道差速走
 			Corner_Done   = 1;//锁存:这个弯已经转过,视觉再喊弯也不转第二次
 			Corner_DoneTick = curr_ms;//记下转完的时刻,供"限时交回视觉"用
+			/* 锁存这一弯：峰值角度 + 收手角度。峰值不到 10 度说明没真转，保留上一弯的 */
+			if (Corner_TurnPeakAngle > 10.0f)
+			{
+				float end_now = Gyro_GetTotalAngle();
+				if (end_now < 0.0f) end_now = -end_now;
+				Corner_LastPeakAngle = Corner_TurnPeakAngle;
+				Corner_LastEndAngle  = end_now;
+			}
 
 			Corner_SegMileage = 0.0f;
 
@@ -545,6 +607,7 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 			Corner_TurnStartMileage = Corner_SegMileage;//标定使用,锁存转弯时间
 
 			Turn_TargetAngle_Deg = Turn_AngleDeg[Corner_Index];//查表要转的角度
+			Corner_TurnPeakAngle = 0.0f;   /* 新的一弯，峰值从头记 */
 
 			/* 转弯就从这一刻算起，陀螺仪角度清零。 */
 			Gyro_ResetTotalAngle();
@@ -711,6 +774,7 @@ static void Task_CarStop(void)
     Corner_Active  = 0;//清空弯道进行时状态
     Corner_Done    = 0;//清空转弯完毕标志
     Corner_Clear   = 3;//强制清空视觉判弯次数
+	Corner_Braking = 0;//清空制动状态
     Corner_ArmDist = 0.0f;//清空视觉报弯后走过的路程
     Corner_Accum   = 0.0f;//清空转弯累计角度
     Corner_DoneTick = 0;//清空转弯完的时刻
@@ -835,8 +899,8 @@ static void Task_SendTelemetry(void)
     data.target_right = target_right;
     data.actual_right = Gyro_IsOk() ? Gyro_GetTotalAngle() : -999.0f;
     data.error        = last_vision_error;
-    data.mileage_arm  = Corner_ArmMileage;
-    data.mileage_turn = Corner_TurnStartMileage;
+    data.mileage_arm  = Corner_LastPeakAngle;   /* 诊断：上一个弯峰值角度(度) */
+    data.mileage_turn = Corner_LastEndAngle;    /* 诊断：上一个弯收手角度(度) */
 #endif
 
     /* 下面这四行只是"用一下"这些变量，把编译告警消掉。 */
@@ -844,6 +908,8 @@ static void Task_SendTelemetry(void)
     (void)VisionLostTicks;
     (void)last_vision_state;
     (void)Calib_Frozen;
+    (void)Corner_ArmMileage;        /* 诊断版暂时不发这两个数，先压掉告警 */
+    (void)Corner_TurnStartMileage;
 
     Debug_log(&data);
 }
@@ -927,12 +993,14 @@ static void Task_30ms_Control(VisionData_t *vis_data)
         Corner_Armed   = 0;                            /* 已经在等 16 厘米的话，取消它 */
         Corner_ArmDist = 0.0f;                         /* 免得残留到下一个弯 */
         Corner_Active  = 1;
+		Corner_Braking = 0;                            /* 新的一次转弯，先退出制动状态 */
         Corner_TurnedForIndex = 1;                     /* 锁存：本段已经转过了 */
         Line_Integral  = 0.0f;                         /* 进弯后车身姿态大变，旧积分没意义 */
         Corner_Accum   = 0.0f;
         Corner_Tick    = App_Clock();
         Corner_TurnStartMileage = Corner_SegMileage;   /* 调试：强转也记开转里程 */
         Turn_TargetAngle_Deg = Turn_AngleDeg[Corner_Index];
+			Corner_TurnPeakAngle = 0.0f;   /* 新的一弯，峰值从头记 */
         Gyro_ResetTotalAngle();
         Corner_SetTarget(CORNER_T_TURN);   /* 强转第一拍就按转弯差速走 */
     }
