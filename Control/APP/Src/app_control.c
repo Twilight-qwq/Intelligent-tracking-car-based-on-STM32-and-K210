@@ -44,8 +44,8 @@
 
 #if TURN_USE_38_BENDS
   #define TURN_TABLE_SIZE 5
-  static const float Turn_ThresholdCm[TURN_TABLE_SIZE] = { 188.0f, 77.0f, 185.0f, 185.0f, 79.0f };
-  static const float Turn_AngleDeg[TURN_TABLE_SIZE]     = {  76.0f,  20.5f,  90.0f,  28.5f,  75.0f };
+  static const float Turn_ThresholdCm[TURN_TABLE_SIZE] = { 188.0f, 79.0f, 190.0f, 193.0f, 79.0f };
+  static const float Turn_AngleDeg[TURN_TABLE_SIZE]     = {  79.0f,  20.5f,  82.0f,  28.5f,  76.0f };
 #else
   #define TURN_TABLE_SIZE 3
   /* 阈值单位：厘米，从「起点 / 上一个弯转完」算起。（详见 Doc/代码说明.md §6） */
@@ -57,7 +57,7 @@
 #define TURN_SPEED         15.0f    // 转弯时基速(= Speed_LargeAngle)
 #define TURN_VALUE         11.55f   /* 转弯差速（= Kp 0.231 × 视觉固定值 50）
                                      */
-#define TURN_TIMEOUT_MS    600      // 兜底:0.6秒还没转够就强制结束(陀螺仪冻住时才会到)
+#define TURN_TIMEOUT_MS   600      // 兜底:0.6秒还没转够就强制结束(陀螺仪冻住时才会到)
 
 #define TURN_BIAS_WINDOW_CM  80.0f
 static const float Turn_LineBias[TURN_TABLE_SIZE] = { 0.0f, -26.0f, 0.0f, -26.0f, 0.0f };   /* 见下面的表 */
@@ -182,7 +182,7 @@ static uint32_t Calib_IdleMs = 0;      // 已经多少毫秒没有新计数
 #define CORNER_HANDOVER_MS 500      // 转完之后最多直行 500 毫秒
 
 /* 弯道冷却（厘米）。（详见 Doc/代码说明.md §9） */
-#define CORNER_COOLDOWN_CM 60.0f//过弯之后再走50cm才允许再次过弯,否则不算
+#define CORNER_COOLDOWN_CM 50.0f//过弯之后再走50cm才允许再次过弯,否则不算
 
 #define FINISH_USE_MILEAGE 1        // 里程兜底停车开关：1=开。/ 0=关（关掉就只剩视觉那条死路）
 #define FINISH_STOP_CM     99.0f    // 最后一个弯转完后的停车里程（厘米）
