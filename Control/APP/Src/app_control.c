@@ -44,8 +44,8 @@
 
 #if TURN_USE_38_BENDS
   #define TURN_TABLE_SIZE 5
-  static const float Turn_ThresholdCm[TURN_TABLE_SIZE] = { 188.0f, 79.0f, 190.0f, 193.0f, 79.0f };
-  static const float Turn_AngleDeg[TURN_TABLE_SIZE]     = {  79.0f,  20.5f,  82.0f,  28.5f,  76.0f };
+  static const float Turn_ThresholdCm[TURN_TABLE_SIZE] = { 188.0f, 79.0f, 184.0f, 191.0f, 79.0f };
+  static const float Turn_AngleDeg[TURN_TABLE_SIZE]     = {  79.0f,  20.5f,  82.0f,  20.5f,  76.0f };
 #else
   #define TURN_TABLE_SIZE 3
   /* 阈值单位：厘米，从「起点 / 上一个弯转完」算起。（详见 Doc/代码说明.md §6） */
@@ -64,6 +64,15 @@
 #define TURN_BRAKE_RATE_DPS   20.0f   /* 角速度降到这以下才算真的停住，单位 度/秒 */
 #define TURN_BRAKE_TIMEOUT_MS 60     /* 制动最长这么久。60 毫秒 × 198 度/秒 ≈ 12 度，再长就会把车拽回头 */
 #define GYRO_DPS_PER_COUNT    (1.0f / 65.5f)  /* 65.5 计数 = 1 度/秒，见 bsp_gyro.c 第 44 行 */
+
+/* ===== 转向角度 PD 闭环（2026-11-27 加；改开关可整体退回老办法）=====
+ * 老办法：固定差速 11.55 一直转，角度到目标就松手 —— 松手后还会白转十几度。
+ * 新办法：每 5 毫秒按「还差多少度」和「转多快」重算差速，接近目标自动减速。 */
+#define TURN_USE_ANGLE_PD    1        /* 1=角度 PD 闭环；0=老的固定差速 + 收尾刹车 */
+#define TURN_ANGLE_KP        0.6f     /* 还差 1 度给多少差速（单位同 TURN_VALUE） */
+#define TURN_ANGLE_KD        0.010f   /* 每 1 度/秒的角速度压掉多少差速（防冲过头） */
+#define TURN_ANGLE_DIFF_MAX  11.55f   /* 差速上限，11.55 约 285 度/秒，跟老办法同速 */
+#define TURN_ANGLE_DIFF_MIN  2.0f     /* 差速下限，约 50 度/秒。防止最后几度磨到超时 */
 
 #define TURN_BIAS_WINDOW_CM  80.0f
 static const float Turn_LineBias[TURN_TABLE_SIZE] = { 0.0f, -26.0f, 0.0f, -26.0f, 0.0f };   /* 见下面的表 */
@@ -376,8 +385,8 @@ static void Corner_SetTarget(uint8_t kind)
 static uint8_t Task_CornerDecide(uint8_t state)
 {
 	/* 制动期间：目标速度由 5 毫秒任务直接写，这里一律不插手。
-	   （不写 target 比写错安全：两套代码抢同一组目标最容易埋雷） */
-	if (Corner_Braking == 1)
+	   不写 target 比写错安全：两套代码抢同一组目标最容易埋雷 */
+	if (Corner_Active == 1)
 	{
 		return 1;
 	}
@@ -510,6 +519,34 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 			if (peak_now > Corner_TurnPeakAngle) Corner_TurnPeakAngle = peak_now;
 		}
 
+#if TURN_USE_ANGLE_PD
+		/* ===== 角度 PD：每 5 毫秒重算一次差速 ===== */
+		if (Gyro_IsOk())
+		{
+			float a_now = Gyro_GetTotalAngle();
+			float err_deg;
+			float r_now;
+			float diff_cmd;
+
+			if (a_now < 0.0f) a_now = -a_now;                     /* 右转角度记成正的 */
+			err_deg = Turn_TargetAngle_Deg - a_now;                /* 还差多少度 */
+			r_now   = -((float)Gyro_GetAxisZRaw() - Gyro_GetZeroBias()) * GYRO_DPS_PER_COUNT;
+			                                                       /* 顺时针为正，跟右转同向 */
+
+			diff_cmd = (TURN_ANGLE_KP * err_deg) - (TURN_ANGLE_KD * r_now);
+
+			if (diff_cmd >  TURN_ANGLE_DIFF_MAX) diff_cmd =  TURN_ANGLE_DIFF_MAX;
+			if (diff_cmd < -TURN_ANGLE_DIFF_MAX) diff_cmd = -TURN_ANGLE_DIFF_MAX;
+			/* 下限：还没到目标就保一点转速，否则最后几度会磨到 600 毫秒超时 */
+			if ((err_deg > 2.0f) && (diff_cmd < TURN_ANGLE_DIFF_MIN)) diff_cmd = TURN_ANGLE_DIFF_MIN;
+
+			target_left  = TURN_SPEED + diff_cmd;
+			target_right = TURN_SPEED - diff_cmd;
+			if (target_left  < 0.0f) target_left  = 0.0f;          /* 目标速度不给负值 */
+			if (target_right < 0.0f) target_right = 0.0f;
+		}
+#endif
+
 		if (Gyro_IsOk() && (Turn_TargetAngle_Deg > 10.0f) && (Corner_Accum > 1400.0f))
 		{
 			float gyro_angle_now = Gyro_GetTotalAngle();
@@ -543,7 +580,7 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 		if(Corner_TurnAngleReached() || (curr_ms - Corner_Tick) > TURN_TIMEOUT_MS)//转角足够或超时
 		{
 			/* 角度刚好够（不是超时），陀螺仪还在：先别收手，进制动阶段 */
-			if ((Corner_Braking == 0) && (Turn_TargetAngle_Deg > 10.0f) && Gyro_IsOk()
+			if ((TURN_USE_ANGLE_PD == 0) && (Corner_Braking == 0) && (Turn_TargetAngle_Deg > 10.0f) && Gyro_IsOk()
 				&& ((curr_ms - Corner_Tick) <= TURN_TIMEOUT_MS))
 			{
 				Corner_Braking   = 1;
@@ -869,7 +906,7 @@ static void Task_SendTelemetry(void)
     data.target_right = (float)Gyro_GetAxisYRaw();//实际发送Y轴原始数据(没用,为0)
     data.actual_right = (float)Gyro_GetAxisZRaw();//实际发送Z轴原始数据,用于处理转角
     data.error        = Gyro_GetTotalAngle();//实际发送当前转角
-    data.mileage_arm  = 0.0f;//实际发送视觉报弯那一刻的段内里程(cm)
+    data.mileage_arm  = (float)Gyro_GetReadErrorCount();//台架 ch6：陀螺仪读失败总次数
     data.mileage_turn = 0.0f;//正式开始转那一刻的段内里程(cm)
 
 #elif (TELEMETRY_MODE == 1)//调试模式1:视觉调试
@@ -899,8 +936,8 @@ static void Task_SendTelemetry(void)
     data.target_right = target_right;
     data.actual_right = Gyro_IsOk() ? Gyro_GetTotalAngle() : -999.0f;
     data.error        = last_vision_error;
-    data.mileage_arm  = Corner_LastPeakAngle;   /* 诊断：上一个弯峰值角度(度) */
-    data.mileage_turn = Corner_LastEndAngle;    /* 诊断：上一个弯收手角度(度) */
+    data.mileage_arm  = (float)Gyro_GetReadErrorCount();   /* 诊断：陀螺仪读失败总次数 */
+    data.mileage_turn = Corner_LastPeakAngle;    /* 诊断：上一个弯峰值角度(度) */
 #endif
 
     /* 下面这四行只是"用一下"这些变量，把编译告警消掉。 */
@@ -910,6 +947,7 @@ static void Task_SendTelemetry(void)
     (void)Calib_Frozen;
     (void)Corner_ArmMileage;        /* 诊断版暂时不发这两个数，先压掉告警 */
     (void)Corner_TurnStartMileage;
+    (void)Corner_LastEndAngle;      /* 这一版 I6 让给峰值角度，收手角度先不发 */
 
     Debug_log(&data);
 }
