@@ -45,7 +45,8 @@
 #if TURN_USE_38_BENDS
   #define TURN_TABLE_SIZE 5
   static const float Turn_ThresholdCm[TURN_TABLE_SIZE] = { 188.0f, 79.0f, 184.0f, 191.0f, 79.0f };
-  static const float Turn_AngleDeg[TURN_TABLE_SIZE]     = {  79.0f,  20.5f,  82.0f,  20.5f,  76.0f };
+  static const float Turn_AngleDeg[TURN_TABLE_SIZE]     = {  90.0f,  38.5f, 103.0f,  38.5f,  90.0f };
+  /* 几何真实角度。旧的眼睛标定值是 { 76.0f, 20.5f, 90.0f, 28.5f, 75.0f }（= 几何角 − 过冲），改成闭环后不再需要补偿，要退回就换回那一行 */
 #else
   #define TURN_TABLE_SIZE 3
   /* 阈值单位：厘米，从「起点 / 上一个弯转完」算起。（详见 Doc/代码说明.md §6） */
@@ -62,17 +63,16 @@
 /* 转弯收尾制动（2026-11-26 加）：角度到目标后改反向差速，把收手那一下甩出去的度吃回来 */
 #define TURN_BRAKE_VALUE      8.0f    /* 制动反向差速，单位同 TURN_VALUE：每 1 个计数 = 左右各 ±1 = 差 2 个计数 ≈ 24.7 度/秒，所以 8.0 → 约 198 度/秒 */
 #define TURN_BRAKE_RATE_DPS   20.0f   /* 角速度降到这以下才算真的停住，单位 度/秒 */
-#define TURN_BRAKE_TIMEOUT_MS 60     /* 制动最长这么久。60 毫秒 × 198 度/秒 ≈ 12 度，再长就会把车拽回头 */
+#define TURN_BRAKE_TIMEOUT_MS 120    /* 制动最长这么久。电机机械时间常数约 39 毫秒，60 只有 1.5 倍，来不及把差速反过来 */
 #define GYRO_DPS_PER_COUNT    (1.0f / 65.5f)  /* 65.5 计数 = 1 度/秒，见 bsp_gyro.c 第 44 行 */
 
 /* ===== 转向角度 PD 闭环（2026-11-27 加；改开关可整体退回老办法）=====
  * 老办法：固定差速 11.55 一直转，角度到目标就松手 —— 松手后还会白转十几度。
  * 新办法：每 5 毫秒按「还差多少度」和「转多快」重算差速，接近目标自动减速。 */
 #define TURN_USE_ANGLE_PD    1        /* 1=角度 PD 闭环；0=老的固定差速 + 收尾刹车 */
-#define TURN_ANGLE_KP        0.6f     /* 还差 1 度给多少差速（单位同 TURN_VALUE） */
-#define TURN_ANGLE_KD        0.010f   /* 每 1 度/秒的角速度压掉多少差速（防冲过头） */
+#define TURN_ANGLE_KP        0.85f    /* 还差 1 度给多少差速。按约 65 毫秒收敛时间反推 */
+#define TURN_ANGLE_KD        0.015f   /* 每 1 度/秒的角速度压掉多少差速（防冲过头） */
 #define TURN_ANGLE_DIFF_MAX  11.55f   /* 差速上限，11.55 约 285 度/秒，跟老办法同速 */
-#define TURN_ANGLE_DIFF_MIN  2.0f     /* 差速下限，约 50 度/秒。防止最后几度磨到超时 */
 
 #define TURN_BIAS_WINDOW_CM  80.0f
 static const float Turn_LineBias[TURN_TABLE_SIZE] = { 0.0f, -26.0f, 0.0f, -26.0f, 0.0f };   /* 见下面的表 */
@@ -537,8 +537,6 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 
 			if (diff_cmd >  TURN_ANGLE_DIFF_MAX) diff_cmd =  TURN_ANGLE_DIFF_MAX;
 			if (diff_cmd < -TURN_ANGLE_DIFF_MAX) diff_cmd = -TURN_ANGLE_DIFF_MAX;
-			/* 下限：还没到目标就保一点转速，否则最后几度会磨到 600 毫秒超时 */
-			if ((err_deg > 2.0f) && (diff_cmd < TURN_ANGLE_DIFF_MIN)) diff_cmd = TURN_ANGLE_DIFF_MIN;
 
 			target_left  = TURN_SPEED + diff_cmd;
 			target_right = TURN_SPEED - diff_cmd;
@@ -580,7 +578,7 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 		if(Corner_TurnAngleReached() || (curr_ms - Corner_Tick) > TURN_TIMEOUT_MS)//转角足够或超时
 		{
 			/* 角度刚好够（不是超时），陀螺仪还在：先别收手，进制动阶段 */
-			if ((TURN_USE_ANGLE_PD == 0) && (Corner_Braking == 0) && (Turn_TargetAngle_Deg > 10.0f) && Gyro_IsOk()
+			if ((Corner_Braking == 0) && (Turn_TargetAngle_Deg > 10.0f) && Gyro_IsOk()
 				&& ((curr_ms - Corner_Tick) <= TURN_TIMEOUT_MS))
 			{
 				Corner_Braking   = 1;
