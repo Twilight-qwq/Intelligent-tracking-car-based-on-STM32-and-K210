@@ -610,6 +610,12 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 				}
 			}
 
+			/* 固定反向差速：必须在这里直接写死，不能指望 PD ——
+			 * 角度刚到目标时 err 约等于 0，PD 算出来的反向差速几乎为零，白转根本吃不掉。
+			 * 这两行写在 PD 之后，覆盖它这一拍的输出。 */
+			target_left  = TURN_SPEED - TURN_BRAKE_VALUE;
+			target_right = TURN_SPEED + TURN_BRAKE_VALUE;
+
 			if ((Corner_BrakeQuiet >= TURN_BRAKE_QUIET_TICKS) || ((curr_ms - Corner_BrakeTick) > TURN_BRAKE_TIMEOUT_MS))
 			{
 				Corner_Braking = 2;   /* 2=已制动过，不许再进；落到下面走正常收手 */
