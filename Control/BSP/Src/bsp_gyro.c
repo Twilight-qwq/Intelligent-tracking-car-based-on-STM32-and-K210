@@ -12,6 +12,8 @@
 
 /* SAO/AD0 接地时是 0x68（悬空也可能是 0x68，建议直接接地） */
 #define GYRO_CHIP_I2C_ADDRESS       0x68
+#define GYRO_CHIP_I2C_ADDRESS_ALT 0x69   /* SAO/AD0 不接地时芯片地址会变成这个 */
+static uint8_t  Gyro_ChipAddress = GYRO_CHIP_I2C_ADDRESS;   /* 实际用的地址：先试 0x68，不通再自动换成 0x69 */
 
 #define GYRO_CHIP_REG_SAMPLE_RATE   0x19
 #define GYRO_CHIP_REG_LOW_PASS      0x1A
@@ -302,7 +304,7 @@ static void SoftI2C_BusRecovery(void)
 static uint8_t GyroChip_WriteRegister(uint8_t register_address, uint8_t register_value)
 {
 	SoftI2C_Start();
-	if (!SoftI2C_WriteByte((uint8_t)(GYRO_CHIP_I2C_ADDRESS << 1)))
+	if (!SoftI2C_WriteByte((uint8_t)(Gyro_ChipAddress << 1)))
 	{
 		SoftI2C_Stop();
 		return 0;
@@ -328,7 +330,7 @@ static uint8_t GyroChip_ReadRegisters(uint8_t start_register, uint8_t *read_buff
 	uint8_t byte_index;     /* 当前读到第几个字节（0 ~ read_count-1） */
 
 	SoftI2C_Start();
-	if (!SoftI2C_WriteByte((uint8_t)(GYRO_CHIP_I2C_ADDRESS << 1)))
+	if (!SoftI2C_WriteByte((uint8_t)(Gyro_ChipAddress << 1)))
 	{
 		SoftI2C_Stop();
 		return 0;
@@ -341,7 +343,7 @@ static uint8_t GyroChip_ReadRegisters(uint8_t start_register, uint8_t *read_buff
 
 	/* 重复起始 */
 	SoftI2C_Start();
-	if (!SoftI2C_WriteByte((uint8_t)((GYRO_CHIP_I2C_ADDRESS << 1) | 1)))
+	if (!SoftI2C_WriteByte((uint8_t)((Gyro_ChipAddress << 1) | 1)))
 	{
 		SoftI2C_Stop();
 		return 0;
@@ -356,6 +358,32 @@ static uint8_t GyroChip_ReadRegisters(uint8_t start_register, uint8_t *read_buff
 	SoftI2C_Stop();
 
 	return 1;
+}
+
+/* 功能：认芯片，两个可能地址都试一遍
+ * 参数：who_am_i_value 出参，读回来的身份号
+ * 返回：1 = 认到了（Gyro_ChipAddress 已定在这颗芯片的地址上）；0 = 都没认到
+ * 说明：SAO/AD0 接地时地址是 0x68，悬空/接高会变成 0x69。
+ *       杜邦线碰掉一根就会变成后者，以前会一直报 -999，现在能自动换过去。
+ */
+static uint8_t GyroChip_DetectOnce(uint8_t *who_am_i_value)
+{
+	uint8_t attempt;   /* 0 = 先试 0x68，1 = 再试 0x69 */
+
+	for (attempt = 0; attempt < 2; attempt++)
+	{
+		Gyro_ChipAddress = (attempt == 0) ? GYRO_CHIP_I2C_ADDRESS : GYRO_CHIP_I2C_ADDRESS_ALT;
+
+		if (GyroChip_ReadRegisters(GYRO_CHIP_REG_WHO_AM_I, who_am_i_value, 1))
+		{
+			if ((*who_am_i_value == GYRO_CHIP_ID_ICM20602) || (*who_am_i_value == GYRO_CHIP_ID_MPU6050))
+			{
+				return 1;
+			}
+		}
+	}
+
+	return 0;
 }
 
 /* 毫秒延时用 MiddleLayer 的 Delay_ms（SysTick 轮询，精确到微秒）。
@@ -379,18 +407,17 @@ void Gyro_Init(void)
 
 	for (retry_times = 0; retry_times < GYRO_CHIP_DETECT_RETRY; retry_times++)
 	{
-		if (GyroChip_ReadRegisters(GYRO_CHIP_REG_WHO_AM_I, &who_am_i_value, 1))
+		/* 这一下会先试 0x68、再试 0x69，两个地址都认不到才算失败 */
+		if (GyroChip_DetectOnce(&who_am_i_value))
 		{
-			if ((who_am_i_value == GYRO_CHIP_ID_ICM20602) || (who_am_i_value == GYRO_CHIP_ID_MPU6050))
-			{
-				Gyro_IsAvailable = 1;
-				break;
-			}
+			Gyro_IsAvailable = 1;
+			break;
 		}
 
 		/* 没认出来就等一会儿再试 */
 		Delay_ms(GYRO_CHIP_DETECT_RETRY_MS);
 	}
+
 
 	Gyro_WhoAmIValue = who_am_i_value;
 
@@ -592,17 +619,13 @@ uint8_t Gyro_TryRecover(void)
 		return 1;                                   /* 已经好的，什么都不做 */
 	}
 
-	if (!GyroChip_ReadRegisters(GYRO_CHIP_REG_WHO_AM_I, &who_am_i_value, 1))
+	/* 两个地址都试，认到哪个用哪个 */
+	if (!GyroChip_DetectOnce(&who_am_i_value))
 	{
-		return 0;                                   /* 这一下没读通，下次再说 */
+		return 0;                                   /* 两个地址都没认到，下次再说 */
 	}
 
 	Gyro_WhoAmIValue = who_am_i_value;
-
-	if ((who_am_i_value != GYRO_CHIP_ID_ICM20602) && (who_am_i_value != GYRO_CHIP_ID_MPU6050))
-	{
-		return 0;                                   /* 读到了但不是这颗芯片（总线悬空常读回 0xFF） */
-	}
 
 	/* 认出来了：把芯片重新配一遍（停车时做，阻塞十几毫秒没关系） */
 	GyroChip_WriteRegister(GYRO_CHIP_REG_POWER_MGMT,  GYRO_CHIP_POWER_ON_VALUE);
