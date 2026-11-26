@@ -39,4 +39,22 @@ typedef struct
 void PID_LineLoop_Init(pid_line_t *pid_l , float Kp , float Kd , float output_max , float output_min);
 float PID_L_Calc(pid_line_t *pid_l , float err , float err_diff);
 
+
+/* ==================== 转向角度环（PD，外环，输出差速） ==================== */
+typedef struct
+{
+	float Kp;				//比例项：还差 1 度给多少差速（单位同 TURN_VALUE）
+	float Kd;				//微分项：每 1 度/秒角速度压掉多少差速
+	float diff_max;			//差速上限（正数），输出夹在 ±diff_max
+	float slew;				//斜率限幅：每拍最多变化多少，防单拍跳变打满反向
+	float diff_prev;		//上一拍输出的差速，斜率限幅用
+	float err;				//本次误差（度，正数=还差这么多）
+	float rate;				//本次角速度（度/秒，和转向同向为正）
+	float output;			//本次输出差速
+}pid_turn_t;
+
+void PID_TurnLoop_Init(pid_turn_t *pid_t , float Kp , float Kd , float diff_max , float slew);
+void PID_TurnLoop_Reset(pid_turn_t *pid_t);
+float PID_TurnLoop_Calc(pid_turn_t *pid_t , float target_deg , float actual_deg , float rate_dps);
+
 #endif

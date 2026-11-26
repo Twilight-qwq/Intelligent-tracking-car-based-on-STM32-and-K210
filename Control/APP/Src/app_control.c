@@ -89,7 +89,6 @@ static float    Corner_Accum  = 0.0f;  // 累计(左轮-右轮)counts, 就是转
 static uint32_t Corner_Tick   = 0;     // 本次转弯开始的时刻, 供兜底超时用
 static uint8_t  Corner_Braking   = 0;  // 0=没制动 1=正在反向差速制动 2=已制动过(不许再进)
 static uint32_t Corner_BrakeTick = 0;  // 制动开始的那一拍
-	static float    Corner_DiffPrev       = 0.0f;   // 上一拍的差速，用来做斜率限幅
 	static float    Corner_BrakeRateF     = 0.0f;   // 制动用的滤波后角速度
 	static uint8_t  Corner_BrakeQuiet     = 0;      // 连续几拍低于阈值
 	static uint16_t Corner_BrakeErrLast   = 0;      // 上一拍的读失败次数，用来识别陈旧读数
@@ -138,6 +137,7 @@ static uint32_t task_last_100ms = 0;//100ms时间片
 static pid_velocity_t pid_v_left;//左速度环pid结构体
 static pid_velocity_t pid_v_right;//右速度环pid结构体
 static pid_line_t pid_l;//方向环结构体
+static pid_turn_t pid_turn;//转向角度环结构体（跟方向环并列，转弯时由它接管）
 /* 方向环的积分项（单位：计数/5ms，最多 ±1.5）。详见 Task_30ms_Control 里的说明。 */
 static float Line_Integral = 0.0f;
 
@@ -251,6 +251,7 @@ void App_Init(void)
 	PID_VelocityLoop_Init(&pid_v_left,100.0f,10.0f,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//台架调定 Kp=100 Ki=10
 	PID_VelocityLoop_Init(&pid_v_right,100.0f,10.0f,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//台架调定，左右同参数
 	PID_LineLoop_Init(&pid_l,0.15f,0.53f,Speed_Straight,-(float)Speed_Straight);
+	PID_TurnLoop_Init(&pid_turn, TURN_ANGLE_KP, TURN_ANGLE_KD, TURN_ANGLE_DIFF_MAX, TURN_ANGLE_SLEW);//角度环：Kp Kd 差速上限 斜率限幅
 
 	//Kp 上限 ≈ 1 / (k × 死区时间)
     WatchDog_Init();
@@ -528,34 +529,18 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 		}
 
 #if TURN_USE_ANGLE_PD
-		/* ===== 角度 PD：每 5 毫秒重算一次差速 ===== */
+		/* ===== 角度 PD：每 5 毫秒把「目标角 / 当前角 / 角速度」交给 mid_pid 算一次差速 ===== */
 		if (Gyro_IsOk())
 		{
 			float a_now = Gyro_GetTotalAngle();
-			float err_deg;
 			float r_now;
 			float diff_cmd;
 
 			if (a_now < 0.0f) a_now = -a_now;                     /* 右转角度记成正的 */
-			err_deg = Turn_TargetAngle_Deg - a_now;                /* 还差多少度 */
-			r_now   = -((float)Gyro_GetAxisZRaw() - Gyro_GetZeroBias()) * GYRO_DPS_PER_COUNT;
+			r_now = -((float)Gyro_GetAxisZRaw() - Gyro_GetZeroBias()) * GYRO_DPS_PER_COUNT;
 			                                                       /* 顺时针为正，跟右转同向 */
 
-			diff_cmd = (TURN_ANGLE_KP * err_deg) - (TURN_ANGLE_KD * r_now);
-
-			if (diff_cmd >  TURN_ANGLE_DIFF_MAX) diff_cmd =  TURN_ANGLE_DIFF_MAX;
-			if (diff_cmd < -TURN_ANGLE_DIFF_MAX) diff_cmd = -TURN_ANGLE_DIFF_MAX;
-
-			/* 斜率限幅：陀螺仪单拍跳变会让 err 突然变负，不加这个差速会一拍打到反向满值 */
-			if (diff_cmd > (Corner_DiffPrev + TURN_ANGLE_SLEW))
-			{
-				diff_cmd = Corner_DiffPrev + TURN_ANGLE_SLEW;
-			}
-			if (diff_cmd < (Corner_DiffPrev - TURN_ANGLE_SLEW))
-			{
-				diff_cmd = Corner_DiffPrev - TURN_ANGLE_SLEW;
-			}
-			Corner_DiffPrev = diff_cmd;
+			diff_cmd = PID_TurnLoop_Calc(&pid_turn, Turn_TargetAngle_Deg, a_now, r_now);
 
 			target_left  = TURN_SPEED + diff_cmd;
 			target_right = TURN_SPEED - diff_cmd;
@@ -698,7 +683,7 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 
 			Turn_TargetAngle_Deg = Turn_AngleDeg[Corner_Index];//查表要转的角度
 			Corner_TurnPeakAngle = 0.0f;   /* 新的一弯，峰值从头记 */
-			Corner_DiffPrev = 0.0f;       /* 新的一弯，差速从 0 起步 */
+			PID_TurnLoop_Reset(&pid_turn);   /* 新的一弯，差速和斜率状态都从 0 起步 */
 
 			/* 转弯就从这一刻算起，陀螺仪角度清零。 */
 			Gyro_ResetTotalAngle();
@@ -1093,7 +1078,7 @@ static void Task_30ms_Control(VisionData_t *vis_data)
         Corner_TurnStartMileage = Corner_SegMileage;   /* 调试：强转也记开转里程 */
         Turn_TargetAngle_Deg = Turn_AngleDeg[Corner_Index];
 			Corner_TurnPeakAngle = 0.0f;   /* 新的一弯，峰值从头记 */
-			Corner_DiffPrev = 0.0f;       /* 新的一弯，差速从 0 起步 */
+			PID_TurnLoop_Reset(&pid_turn);   /* 新的一弯，差速和斜率状态都从 0 起步 */
         Gyro_ResetTotalAngle();
         Corner_SetTarget(CORNER_T_TURN);   /* 强转第一拍就按转弯差速走 */
     }

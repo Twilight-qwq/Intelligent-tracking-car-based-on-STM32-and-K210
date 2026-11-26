@@ -126,3 +126,61 @@ float PID_L_Calc(pid_line_t *pid_l , float err , float err_diff)
 	}
 	return pid_l->output;
 }
+
+
+/* ==================== 转向角度环（PD） ==================== */
+void PID_TurnLoop_Init(pid_turn_t *pid_t , float Kp , float Kd , float diff_max , float slew)
+{
+	pid_t->Kp = Kp;
+	pid_t->Kd = Kd;
+	pid_t->diff_max = diff_max;
+	pid_t->slew = slew;
+	pid_t->diff_prev = 0.0f;
+	pid_t->err = 0.0f;
+	pid_t->rate = 0.0f;
+	pid_t->output = 0.0f;
+}
+
+/* 功能：每次开转前清一次，差速从 0 重新起步（不继承上一个弯的斜率状态）
+ * 参数：pid_t 角度环结构体指针
+ * 返回：无
+ */
+void PID_TurnLoop_Reset(pid_turn_t *pid_t)
+{
+	pid_t->diff_prev = 0.0f;
+	pid_t->err = 0.0f;
+	pid_t->rate = 0.0f;
+	pid_t->output = 0.0f;
+}
+
+/* 功能：转向角度环 PD 计算
+ * 参数1：pid_t 角度环结构体指针
+ * 参数2：目标角（度，正数）
+ * 参数3：当前已经转过的角（度，正数）
+ * 参数4：当前角速度（度/秒，和转向同向为正）
+ * 返回：本拍差速（counts/周期），正数 = 往当前转向方向转，负数 = 反向刹
+ * 说明：D 项直接用陀螺仪的角速度，不用角度差分——角度差分噪声大得多
+ */
+float PID_TurnLoop_Calc(pid_turn_t *pid_t , float target_deg , float actual_deg , float rate_dps)
+{
+	float diff;
+
+	pid_t->err  = target_deg - actual_deg;
+	pid_t->rate = rate_dps;
+
+	//1.PD：P 拉向目标，D 用角速度做阻尼
+	diff = (pid_t->Kp) * (pid_t->err) - (pid_t->Kd) * (pid_t->rate);
+
+	//2.输出限幅
+	if(diff >  pid_t->diff_max) diff =  pid_t->diff_max;
+	if(diff < -pid_t->diff_max) diff = -pid_t->diff_max;
+
+	//3.斜率限幅：陀螺仪单拍跳变会让 err 突然变负，不加这个会一拍打满反向
+	if(diff > (pid_t->diff_prev + pid_t->slew)) diff = pid_t->diff_prev + pid_t->slew;
+	if(diff < (pid_t->diff_prev - pid_t->slew)) diff = pid_t->diff_prev - pid_t->slew;
+
+	pid_t->diff_prev = diff;
+	pid_t->output = diff;
+	return diff;
+}
+
