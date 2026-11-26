@@ -204,7 +204,16 @@ static uint32_t Calib_IdleMs = 0;      // 已经多少毫秒没有新计数
 
 /* ==================== 可调参数（3）报弯提前量 / 交接 / 冷却 / 终点 / 限幅 / 堵转 ==================== */
 #define TURN_ARM_CM        999.0f   /* 【2026-11-24 早上，再次关掉；原值 16】
+
                                       */
+/* ---- 弯前冻结（2026-11-27 加）：离弯最后这一段，不许视觉提前把车拐进去 ----
+ * 现象：钝角弯出现「分两段转」——第一段是视觉按偏差自己拐的，第二段才是陀螺仪。
+ * 做法：离弯还剩 PRE_CORNER_FREEZE_CM 厘米时，把「往弯方向」的差速压到
+ *       PRE_CORNER_TURN_MAX；反方向的修正照旧，所以车歪了还能修回来。
+ * 全线五个弯都是右转，所以「往弯方向」= turn 为正。 */
+#define PRE_CORNER_FREEZE      1        /* 1=开 0=关（关掉就完全回到原来的行为） */
+#define PRE_CORNER_FREEZE_CM   35.0f    /* 离弯多少厘米开始冻结 */
+#define PRE_CORNER_TURN_MAX    0.4f     /* 冻结期往弯方向最多给多少差速（1.5 原来是上限） */
 #define CM_PER_COUNT       0.01402f // 1 个编码器计数 = 多少厘米
 #define TURN_ARM_SPEED     15.0f    // 等里程期间的直行速度:提前降到转弯基速,别带着最高速进弯
 /* 等里程这 16 厘米里，方向环允许的最大差速（单位同目标速度，计数/5ms）。 */
@@ -1160,6 +1169,20 @@ static void Task_30ms_Control(VisionData_t *vis_data)
 
     if (turn >  TURN_STRAIGHT_DIFF_MAX) turn =  TURN_STRAIGHT_DIFF_MAX;
     if (turn < -TURN_STRAIGHT_DIFF_MAX) turn = -TURN_STRAIGHT_DIFF_MAX;
+
+#if PRE_CORNER_FREEZE
+	{
+		/* 离下一个弯还剩多少厘米（阈值是「该开转」的点） */
+		float dist_to_corner = Turn_ThresholdCm[Corner_Index] - Corner_SegMileage;
+
+		if ((Corner_Active == 0) && (Corner_Armed == 0) && (Finish_Armed == 0)
+		    && (dist_to_corner > 0.0f) && (dist_to_corner < PRE_CORNER_FREEZE_CM))
+		{
+			/* 只压「往弯方向」（turn > 0）的那一头，反方向不动 */
+			if (turn > PRE_CORNER_TURN_MAX) turn = PRE_CORNER_TURN_MAX;
+		}
+	}
+#endif
 
     target_left = base_speed + turn;
     target_right = base_speed - turn;
