@@ -579,34 +579,35 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 		/* 制动阶段：反向差速（内侧轮比外侧轮快），专门吃掉收手之后那 20 度的白转 */
 		if (Corner_Braking == 1)
 		{
-			float brake_rate;
+			float brake_rate = 0.0f;
 			uint16_t err_now;
 
-			/* 这一拍陀螺仪读失败过：读数可能是陈旧的，不能用它判断「停没停」 */
+			/* 这一拍陀螺仪读失败过：读数可能是陈旧的，这一拍不认「安静」。
+			 * 但绝对不能 return —— 一 return 就把下面的 120 毫秒兜底和整个收手状态机全跳过，
+			 * 制动会永远退不出去，车会一直反向转。 */
 			err_now = Gyro_GetReadErrorCount();
 			if (err_now != Corner_BrakeErrLast)
 			{
 				Corner_BrakeErrLast = err_now;
-				return;
-			}
-
-			/* 一阶低通：单拍跳变只占 40%，不会因为一个坏点就提前收手 */
-			brake_rate = -((float)Gyro_GetAxisZRaw() - Gyro_GetZeroBias()) * GYRO_DPS_PER_COUNT;
-			Corner_BrakeRateF += TURN_BRAKE_RATE_ALPHA * (brake_rate - Corner_BrakeRateF);
-			brake_rate = Corner_BrakeRateF;
-			if (brake_rate < 0.0f) brake_rate = -brake_rate;
-
-			target_left  = TURN_SPEED - TURN_BRAKE_VALUE;
-			target_right = TURN_SPEED + TURN_BRAKE_VALUE;
-
-			/* 要连续几拍都安静才算停住，避免被一两个坏点骗过去 */
-			if (brake_rate < TURN_BRAKE_RATE_DPS)
-			{
-				if (Corner_BrakeQuiet < 255) Corner_BrakeQuiet++;
+				Corner_BrakeQuiet   = 0;
 			}
 			else
 			{
-				Corner_BrakeQuiet = 0;
+				/* 一阶低通：单拍跳变只占 40%，不会因为一个坏点就提前收手 */
+				brake_rate = -((float)Gyro_GetAxisZRaw() - Gyro_GetZeroBias()) * GYRO_DPS_PER_COUNT;
+				Corner_BrakeRateF += TURN_BRAKE_RATE_ALPHA * (brake_rate - Corner_BrakeRateF);
+				brake_rate = Corner_BrakeRateF;
+				if (brake_rate < 0.0f) brake_rate = -brake_rate;
+
+				/* 要连续几拍都安静才算停住，避免被一两个坏点骗过去 */
+				if (brake_rate < TURN_BRAKE_RATE_DPS)
+				{
+					if (Corner_BrakeQuiet < 255) Corner_BrakeQuiet++;
+				}
+				else
+				{
+					Corner_BrakeQuiet = 0;
+				}
 			}
 
 			if ((Corner_BrakeQuiet >= TURN_BRAKE_QUIET_TICKS) || ((curr_ms - Corner_BrakeTick) > TURN_BRAKE_TIMEOUT_MS))
@@ -628,7 +629,7 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 			{
 				Corner_Braking   = 1;
 				Corner_BrakeTick = curr_ms;
-				Corner_BrakeRateF   = 0.0f;
+				Corner_BrakeRateF   = -((float)Gyro_GetAxisZRaw() - Gyro_GetZeroBias()) * GYRO_DPS_PER_COUNT;   /* 从真实角速度起步，不从 0 爬 */
 				Corner_BrakeQuiet   = 0;
 				Corner_BrakeErrLast = Gyro_GetReadErrorCount();
 				return;               /* 下一拍开始制动 */
