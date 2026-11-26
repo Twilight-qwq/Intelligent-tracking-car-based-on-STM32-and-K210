@@ -73,6 +73,10 @@
 #define TURN_ANGLE_KP        0.85f    /* 还差 1 度给多少差速。按约 65 毫秒收敛时间反推 */
 #define TURN_ANGLE_KD        0.015f   /* 每 1 度/秒的角速度压掉多少差速（防冲过头） */
 #define TURN_ANGLE_DIFF_MAX  11.55f   /* 差速上限，11.55 约 285 度/秒，跟老办法同速 */
+#define TURN_ANGLE_SLEW      3.0f     /* 每 5 毫秒差速最多变这么多（防单拍跳变打满反向） */
+#define TURN_BRAKE_RATE_ALPHA 0.4f    /* 制动判据的低通系数，0.4 = 一拍吃掉 40% 差值 */
+#define TURN_BRAKE_QUIET_TICKS 3      /* 连续几拍都安静才算真停住（3 拍 = 15 毫秒） */
+#define TURN_STUCK_RATIO     1.15f    /* 哑火兜底：编码器转到这里 × 目标角/90 就强制结束 */
 
 #define TURN_BIAS_WINDOW_CM  80.0f
 static const float Turn_LineBias[TURN_TABLE_SIZE] = { 0.0f, -26.0f, 0.0f, -26.0f, 0.0f };   /* 见下面的表 */
@@ -85,6 +89,10 @@ static float    Corner_Accum  = 0.0f;  // 累计(左轮-右轮)counts, 就是转
 static uint32_t Corner_Tick   = 0;     // 本次转弯开始的时刻, 供兜底超时用
 static uint8_t  Corner_Braking   = 0;  // 0=没制动 1=正在反向差速制动 2=已制动过(不许再进)
 static uint32_t Corner_BrakeTick = 0;  // 制动开始的那一拍
+	static float    Corner_DiffPrev       = 0.0f;   // 上一拍的差速，用来做斜率限幅
+	static float    Corner_BrakeRateF     = 0.0f;   // 制动用的滤波后角速度
+	static uint8_t  Corner_BrakeQuiet     = 0;      // 连续几拍低于阈值
+	static uint16_t Corner_BrakeErrLast   = 0;      // 上一拍的读失败次数，用来识别陈旧读数
 	static float Corner_TurnPeakAngle = 0.0f;   // 本弯转弯期间陀螺仪认到的最大角度
 	static float Corner_LastPeakAngle = 0.0f;   // 锁存:上一个弯的峰值角度(直道漂移不计)
 	static float Corner_LastEndAngle  = 0.0f;   // 锁存:上一个弯收手那一刻的角度
@@ -538,6 +546,17 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 			if (diff_cmd >  TURN_ANGLE_DIFF_MAX) diff_cmd =  TURN_ANGLE_DIFF_MAX;
 			if (diff_cmd < -TURN_ANGLE_DIFF_MAX) diff_cmd = -TURN_ANGLE_DIFF_MAX;
 
+			/* 斜率限幅：陀螺仪单拍跳变会让 err 突然变负，不加这个差速会一拍打到反向满值 */
+			if (diff_cmd > (Corner_DiffPrev + TURN_ANGLE_SLEW))
+			{
+				diff_cmd = Corner_DiffPrev + TURN_ANGLE_SLEW;
+			}
+			if (diff_cmd < (Corner_DiffPrev - TURN_ANGLE_SLEW))
+			{
+				diff_cmd = Corner_DiffPrev - TURN_ANGLE_SLEW;
+			}
+			Corner_DiffPrev = diff_cmd;
+
 			target_left  = TURN_SPEED + diff_cmd;
 			target_right = TURN_SPEED - diff_cmd;
 			if (target_left  < 0.0f) target_left  = 0.0f;          /* 目标速度不给负值 */
@@ -545,7 +564,8 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 		}
 #endif
 
-		if (Gyro_IsOk() && (Turn_TargetAngle_Deg > 10.0f) && (Corner_Accum > 1400.0f))
+		/* 哑火兜底：编码器转过「目标角的 115%」而陀螺仪还不到 10 度，才判它哑火。按目标角缩放，小角度弯不会被拖到 85 度 */
+		if (Gyro_IsOk() && (Turn_TargetAngle_Deg > 10.0f) && (Corner_Accum > (TURN_DIFF_TARGET * (Turn_TargetAngle_Deg / 90.0f) * TURN_STUCK_RATIO)))
 		{
 			float gyro_angle_now = Gyro_GetTotalAngle();
 			if (gyro_angle_now < 0.0f) gyro_angle_now = -gyro_angle_now;
@@ -559,13 +579,37 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 		/* 制动阶段：反向差速（内侧轮比外侧轮快），专门吃掉收手之后那 20 度的白转 */
 		if (Corner_Braking == 1)
 		{
-			float brake_rate = ((float)Gyro_GetAxisZRaw() - Gyro_GetZeroBias()) * GYRO_DPS_PER_COUNT;
+			float brake_rate;
+			uint16_t err_now;
+
+			/* 这一拍陀螺仪读失败过：读数可能是陈旧的，不能用它判断「停没停」 */
+			err_now = Gyro_GetReadErrorCount();
+			if (err_now != Corner_BrakeErrLast)
+			{
+				Corner_BrakeErrLast = err_now;
+				return;
+			}
+
+			/* 一阶低通：单拍跳变只占 40%，不会因为一个坏点就提前收手 */
+			brake_rate = -((float)Gyro_GetAxisZRaw() - Gyro_GetZeroBias()) * GYRO_DPS_PER_COUNT;
+			Corner_BrakeRateF += TURN_BRAKE_RATE_ALPHA * (brake_rate - Corner_BrakeRateF);
+			brake_rate = Corner_BrakeRateF;
 			if (brake_rate < 0.0f) brake_rate = -brake_rate;
 
 			target_left  = TURN_SPEED - TURN_BRAKE_VALUE;
 			target_right = TURN_SPEED + TURN_BRAKE_VALUE;
 
-			if ((brake_rate < TURN_BRAKE_RATE_DPS) || ((curr_ms - Corner_BrakeTick) > TURN_BRAKE_TIMEOUT_MS))
+			/* 要连续几拍都安静才算停住，避免被一两个坏点骗过去 */
+			if (brake_rate < TURN_BRAKE_RATE_DPS)
+			{
+				if (Corner_BrakeQuiet < 255) Corner_BrakeQuiet++;
+			}
+			else
+			{
+				Corner_BrakeQuiet = 0;
+			}
+
+			if ((Corner_BrakeQuiet >= TURN_BRAKE_QUIET_TICKS) || ((curr_ms - Corner_BrakeTick) > TURN_BRAKE_TIMEOUT_MS))
 			{
 				Corner_Braking = 2;   /* 2=已制动过，不许再进；落到下面走正常收手 */
 			}
@@ -578,11 +622,15 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 		if(Corner_TurnAngleReached() || (curr_ms - Corner_Tick) > TURN_TIMEOUT_MS)//转角足够或超时
 		{
 			/* 角度刚好够（不是超时），陀螺仪还在：先别收手，进制动阶段 */
-			if ((Corner_Braking == 0) && (Turn_TargetAngle_Deg > 10.0f) && Gyro_IsOk()
+			/* Corner_Accum 被哑火兜底写成 TURN_DIFF_TARGET*100，用 10 倍做分界：兜底触发的这次不进制动 */
+			if ((Corner_Braking == 0) && (Turn_TargetAngle_Deg > 10.0f) && Gyro_IsOk() && (Corner_Accum < (TURN_DIFF_TARGET * 10.0f))
 				&& ((curr_ms - Corner_Tick) <= TURN_TIMEOUT_MS))
 			{
 				Corner_Braking   = 1;
 				Corner_BrakeTick = curr_ms;
+				Corner_BrakeRateF   = 0.0f;
+				Corner_BrakeQuiet   = 0;
+				Corner_BrakeErrLast = Gyro_GetReadErrorCount();
 				return;               /* 下一拍开始制动 */
 			}
 
@@ -643,6 +691,7 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 
 			Turn_TargetAngle_Deg = Turn_AngleDeg[Corner_Index];//查表要转的角度
 			Corner_TurnPeakAngle = 0.0f;   /* 新的一弯，峰值从头记 */
+			Corner_DiffPrev = 0.0f;       /* 新的一弯，差速从 0 起步 */
 
 			/* 转弯就从这一刻算起，陀螺仪角度清零。 */
 			Gyro_ResetTotalAngle();
@@ -1037,6 +1086,7 @@ static void Task_30ms_Control(VisionData_t *vis_data)
         Corner_TurnStartMileage = Corner_SegMileage;   /* 调试：强转也记开转里程 */
         Turn_TargetAngle_Deg = Turn_AngleDeg[Corner_Index];
 			Corner_TurnPeakAngle = 0.0f;   /* 新的一弯，峰值从头记 */
+			Corner_DiffPrev = 0.0f;       /* 新的一弯，差速从 0 起步 */
         Gyro_ResetTotalAngle();
         Corner_SetTarget(CORNER_T_TURN);   /* 强转第一拍就按转弯差速走 */
     }
