@@ -223,7 +223,14 @@ static uint32_t Calib_IdleMs = 0;      // 已经多少毫秒没有新计数
 #define STALL_DUTY_MIN      999.0f  /* 速度环输出（‰）正向顶到这么多算「还在死推」 */
 #define STALL_CONFIRM_MS    400     /* 连续这么多毫秒都符合才算真堵转 */
 #define STALL_GRACE_MS      500     /* 每次启动后这么久之内不检测（挡起步误杀） */
+/* ---- 速度环（内环）初始增益：蓝牙可在线改，这里只是上电初值 ---- */
+#define SPEED_KP        100.0f   /* 比例：误差 1 个计数给 100‰ 占空比 */
+#define SPEED_KI        10.0f    /* 积分 */
+
 /* ---- 方向环（外环）---- */
+#define LINE_KP         0.15f    /* 比例：偏差 1 格给多少差速 */
+#define LINE_KD         0.53f    /* 微分：偏差变化 1 格再给多少 */
+
     #define LINE_ERR_OFFSET   (-2.5f)
 
     //直道pd
@@ -248,9 +255,9 @@ void App_Init(void)
 	Gyro_Init();
 	k210rcv_Init();
 	SysTimer_Init();
-	PID_VelocityLoop_Init(&pid_v_left,100.0f,10.0f,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//台架调定 Kp=100 Ki=10
-	PID_VelocityLoop_Init(&pid_v_right,100.0f,10.0f,(float)MOTOR_DUTY_FULLSCALE,-(float)MOTOR_DUTY_FULLSCALE);//台架调定，左右同参数
-	PID_LineLoop_Init(&pid_l,0.15f,0.53f,Speed_Straight,-(float)Speed_Straight);
+	PID_VelocityLoop_Init(&pid_v_left, SPEED_KP, SPEED_KI, (float)MOTOR_DUTY_FULLSCALE, -(float)MOTOR_DUTY_FULLSCALE);
+	PID_VelocityLoop_Init(&pid_v_right, SPEED_KP, SPEED_KI, (float)MOTOR_DUTY_FULLSCALE, -(float)MOTOR_DUTY_FULLSCALE);
+	PID_LineLoop_Init(&pid_l, LINE_KP, LINE_KD, Speed_Straight, -(float)Speed_Straight);
 	PID_TurnLoop_Init(&pid_turn, TURN_ANGLE_KP, TURN_ANGLE_KD, TURN_ANGLE_DIFF_MAX, TURN_ANGLE_SLEW);//角度环：Kp Kd 差速上限 斜率限幅
 
 	//Kp 上限 ≈ 1 / (k × 死区时间)
