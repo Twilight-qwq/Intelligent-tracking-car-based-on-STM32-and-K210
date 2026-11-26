@@ -17,8 +17,8 @@ axis*; the STM32 turns that number into a wheel-speed differential through a cas
           lane markings                     TB6612 → 2× DC motor
 ```
 
-The track geometry and the rules the vehicle must satisfy are documented in
-[`Doc/Design_Specification.pdf`](Doc/Design_Specification.pdf).
+The track geometry and the rules the vehicle must satisfy are documented in a
+local design specification that is not published in this repository.
 
 ---
 
@@ -48,7 +48,6 @@ The track geometry and the rules the vehicle must satisfy are documented in
 │   ├── judge.py                 Error / state decision logic
 │   └── main.py                  Entry point
 │
-├── Doc/                         Track specification and pin-out table
 └── README.md
 ```
 
@@ -175,7 +174,7 @@ on the same UART — the output will interleave.
 
 ## 6. Pin assignment
 
-The full table is in [`Doc/引脚分配表.xlsx`](Doc/), including peripheral, signal, GPIO mode
+The full pin table (kept locally, not published) covers peripheral, signal, GPIO mode
 and the mating connector pin.
 
 | Module | Pins |
