@@ -71,7 +71,7 @@
  * 新办法：每 5 毫秒按「还差多少度」和「转多快」重算差速，接近目标自动减速。 */
 #define TURN_USE_ANGLE_PD    1        /* 1=角度 PD 闭环；0=老的固定差速 + 收尾刹车 */
 #define TURN_ANGLE_KP        0.85f    /* 还差 1 度给多少差速。按约 65 毫秒收敛时间反推 */
-#define TURN_ANGLE_KD        0.015f   /* 每 1 度/秒的角速度压掉多少差速（防冲过头） */
+#define TURN_ANGLE_KD        0.0f     /* 初值 0：先只调 P，P 稳了再往上加 D */
 #define TURN_ANGLE_DIFF_MAX  11.55f   /* 差速上限，11.55 约 285 度/秒，跟老办法同速 */
 #define TURN_ANGLE_SLEW      3.0f     /* 每 5 毫秒差速最多变这么多（防单拍跳变打满反向） */
 #define TURN_BRAKE_RATE_ALPHA 0.4f    /* 制动判据的低通系数，0.4 = 一拍吃掉 40% 差值 */
@@ -103,6 +103,7 @@ static uint8_t  Finish_Armed      = 0;      // 1=最后一个弯已经转完,正
 
 static float Speed_Straight   = 20.0f; //直道基速(电机上限37，留7个count给差速)  ← 用户手改(原30)，方便测试不用每次发蓝牙
 static float Speed_SmallAngle = 20.0f; //小角度(直角,钝角)基速  ← 用户手改(原25)
+static float Turn_BrakeValue = TURN_BRAKE_VALUE;  //收尾制动强度(反向差速), 蓝牙 0x0E 可在线改
 static float Speed_LargeAngle = 15.0f; //大角度(锐角)基速
 static float target_left = 0.0f;//目标左轮速度
 static float target_right = 0.0f;//目标右轮速度
@@ -189,6 +190,11 @@ static uint32_t Calib_IdleMs = 0;      // 已经多少毫秒没有新计数
 #define LIMIT_LINE_KP_MAX   1.0f  //外环方向环Kp上限
 #define LIMIT_LINE_KD_MAX   1.0f //外环方向环Kd上限
 #define LIMIT_SPEED_MAX     37.0f //基础速度上限
+//转向角度环的蓝牙调参上限
+#define LIMIT_TURN_KP_MAX      3.0f   //差速/度
+#define LIMIT_TURN_KD_MAX      0.2f   //差速/(度/秒)
+#define LIMIT_TURN_DIFF_MAXMAX 20.0f  //差速上限最大允许值
+#define LIMIT_TURN_BRAKE_MAX   20.0f  //制动强度最大允许值
 //7.板载 LED 状态指示(100ms)
 #define INDICATE_SLOW_TICKS     5       //慢闪: 5 x 100ms = 500ms 翻转一次
 #define INDICATE_FAST_TICKS     1       //快闪: 1 x 100ms = 100ms 翻转一次
@@ -605,8 +611,8 @@ static void Task_5ms_CornerStep(uint32_t curr_ms)
 			/* 固定反向差速：必须在这里直接写死，不能指望 PD ——
 			 * 角度刚到目标时 err 约等于 0，PD 算出来的反向差速几乎为零，白转根本吃不掉。
 			 * 这两行写在 PD 之后，覆盖它这一拍的输出。 */
-			target_left  = TURN_SPEED - TURN_BRAKE_VALUE;
-			target_right = TURN_SPEED + TURN_BRAKE_VALUE;
+			target_left  = TURN_SPEED - Turn_BrakeValue;
+			target_right = TURN_SPEED + Turn_BrakeValue;
 
 			if ((Corner_BrakeQuiet >= TURN_BRAKE_QUIET_TICKS) || ((curr_ms - Corner_BrakeTick) > TURN_BRAKE_TIMEOUT_MS))
 			{
@@ -924,6 +930,20 @@ static void Task_BtCommand(void)
                     break;
                 
                 //基础速度
+
+                //外环角度环（转弯时接管，蓝牙可在线调）
+                case BT_CMD_SET_TURN_KP: 
+                    if (bt_cmd.param_val >= 0.0f && bt_cmd.param_val <= LIMIT_TURN_KP_MAX) pid_turn.Kp = bt_cmd.param_val; 
+                    break;
+                case BT_CMD_SET_TURN_KD: 
+                    if (bt_cmd.param_val >= 0.0f && bt_cmd.param_val <= LIMIT_TURN_KD_MAX) pid_turn.Kd = bt_cmd.param_val; 
+                    break;
+                case BT_CMD_SET_TURN_DIFFMAX: 
+                    if (bt_cmd.param_val >= 0.0f && bt_cmd.param_val <= LIMIT_TURN_DIFF_MAXMAX) pid_turn.diff_max = bt_cmd.param_val; 
+                    break;
+                case BT_CMD_SET_BRAKE_VALUE: 
+                    if (bt_cmd.param_val >= 0.0f && bt_cmd.param_val <= LIMIT_TURN_BRAKE_MAX) Turn_BrakeValue = bt_cmd.param_val; 
+                    break;
                 case BT_CMD_SET_SPD_STRA:  
                     if (bt_cmd.param_val >= 0.0f && bt_cmd.param_val <= LIMIT_SPEED_MAX) Speed_Straight = bt_cmd.param_val; 
                     break;

@@ -35,6 +35,11 @@ uint8_t Protocol_GetVision(VisionData_t *out_data);
 #define BT_CMD_SET_SPD_LARGE    0x09  // 大角度弯 (锐角)
 // 运行控制 (启停)
 #define BT_CMD_SET_RUN_STATE    0x0A  // 1.0=启动 0.0=停车 (与按键共用 CarRun_State)
+// 转向角度环 (转弯时接管方向, PD)                          2026-11-27 加
+#define BT_CMD_SET_TURN_KP      0x0B  // 角度环 Kp（每差 1 度给多少差速）
+#define BT_CMD_SET_TURN_KD      0x0C  // 角度环 Kd（每 1 度/秒压掉多少差速）
+#define BT_CMD_SET_TURN_DIFFMAX 0x0D  // 角度环差速上限（计数/5ms，11.55 ≈ 285 度/秒）
+#define BT_CMD_SET_BRAKE_VALUE  0x0E  // 收尾制动强度（反向差速，8.0 ≈ 198 度/秒）
 
 
 typedef struct {
